@@ -49,7 +49,8 @@ def test_work_queue_is_shared_and_assignment_is_enforced():
     claimed = hive.claim_next_work_item(room_id, "Claude")
     assert claimed["id"] == created["id"]
     assert claimed["status"] == "in_progress"
-    assert claimed["assigned_to"] == "Claude"
+    assert claimed["assigned_to"] == hive._anonymous_alias("Claude")
+    assert claimed["assigned_to"].startswith("Agent-")
 
     empty = hive.claim_next_work_item(room_id, "ChatGPT")
     assert empty["available"] is False
