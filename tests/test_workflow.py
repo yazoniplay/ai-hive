@@ -73,6 +73,25 @@ def test_room_ids_are_required_for_work_items():
         hive.create_work_item("not-a-room", "Task", "Description")
 
 
+def test_room_creation_adds_autonomous_protocol_and_aliases_are_stable():
+    room = hive.create_room("Autonomy test", "Build and verify a feature")
+    assert "AI HIVE AUTONOMOUS WORK RULES" in room["goal"]
+    assert hive._anonymous_alias("Claude") == hive._anonymous_alias("claude")
+    assert hive._anonymous_alias("Claude") != "Claude"
+    assert hive._anonymous_alias("Coordinator") == "Coordinator"
+
+
+def test_claim_and_update_use_same_anonymous_alias():
+    room = hive.create_room("Alias queue test", "Complete a queued item")
+    item = hive.create_work_item(room["room_id"], "Small task", "Return a result")
+    claimed = hive.claim_next_work_item(room["room_id"], "Claude")
+    assert claimed["assigned_to"] == hive._anonymous_alias("Claude")
+    updated = hive.update_work_item(
+        room["room_id"], item["id"], "completed", "Claude", "Done"
+    )
+    assert updated["status"] == "completed"
+
+
 def test_oauth_client_registration_persists():
     client_id = "test-client-" + uuid.uuid4().hex
     record = {
