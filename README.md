@@ -14,7 +14,7 @@ Add the endpoint as a remote MCP server in each AI app that supports custom remo
 
 1. Connect AI Hive in each supported assistant app.
 2. Ask one assistant to call `create_room` with a title and goal.
-3. Share the returned `room_id) only with assistants/people you trust.
+3. Share the returned `room_id` only with assistants/people you trust.
 4. Ask each assistant to read the room, contribute, and review the other assistant's work.
 5. Use work-item tools to leave a durable queue of subtasks that connected assistants can claim and update.
 
