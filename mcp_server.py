@@ -1,7 +1,9 @@
 """AI Hive: OAuth-protected shared workspace for MCP-enabled AI clients."""
 import base64
 import hashlib
+import hmac
 import html
+import json
 import os
 import secrets
 import time
@@ -32,6 +34,7 @@ PUBLIC_BASE = os.getenv("AI_HIVE_PUBLIC_URL", "https://ai-hive.onrender.com").rs
 MCP_URL = PUBLIC_BASE + "/mcp"
 AUTH_ISSUER = PUBLIC_BASE
 LOGIN_PASSWORD = os.getenv("AI_HIVE_LOGIN_PASSWORD", "")
+TOKEN_SECRET = os.getenv("AI_HIVE_TOKEN_SECRET", "local-development-only-change-me").encode("utf-8")
 
 oauth_clients: dict[str, dict[str, Any]] = {}
 authorization_codes: dict[str, dict[str, Any]] = {}
@@ -196,9 +199,47 @@ def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
+def _signed_payload(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    body = _b64url(raw)
+    signature = _b64url(hmac.new(TOKEN_SECRET, body.encode("ascii"), hashlib.sha256).digest())
+    return body + "." + signature
+
+
+def _read_signed_payload(token: str, expected_type: str) -> dict[str, Any] | None:
+    try:
+        body, signature = token.rsplit(".", 1)
+        expected = _b64url(hmac.new(TOKEN_SECRET, body.encode("ascii"), hashlib.sha256).digest())
+        if not hmac.compare_digest(signature, expected):
+            return None
+        padding = "=" * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(body + padding))
+        if payload.get("type") != expected_type:
+            return None
+        if expected_type != "oauth_client" and float(payload.get("expires_at", 0)) <= time.time():
+            return None
+        return payload
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def _client_id_for(client_record: dict[str, Any]) -> str:
+    payload = {
+        "type": "oauth_client",
+        "client_name": client_record["client_name"],
+        "redirect_uris": sorted(set(client_record["redirect_uris"])),
+    }
+    return "hive_" + _signed_payload(payload)
+
+
 def _valid_client_redirect(client_id: str, redirect_uri: str) -> bool:
     client = storage_get_oauth_client(client_id)
-    return bool(client and redirect_uri in client["redirect_uris"])
+    if client and redirect_uri in client["redirect_uris"]:
+        return True
+    if not client_id.startswith("hive_"):
+        return False
+    payload = _read_signed_payload(client_id[5:], "oauth_client")
+    return bool(payload and redirect_uri in payload.get("redirect_uris", []))
 
 
 def _parse_form(body: bytes) -> dict[str, str]:
@@ -215,8 +256,8 @@ async def require_mcp_bearer_token(request: Request, call_next):
     if request.url.path == "/mcp" or request.url.path.startswith("/mcp/"):
         auth_header = request.headers.get("authorization", "")
         token = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
-        record = access_tokens.get(token)
-        if not record or record["expires_at"] <= time.time():
+        record = _read_signed_payload(token, "access_token")
+        if not record or record.get("resource") != MCP_URL:
             metadata = PUBLIC_BASE + "/.well-known/oauth-protected-resource/mcp"
             return JSONResponse(
                 {"error": "invalid_token", "error_description": "Sign in to AI Hive to use its tools."},
@@ -282,13 +323,13 @@ async def oauth_register(request: Request):
         ):
             return _oauth_error("invalid_redirect_uri")
         valid_uris.append(uri)
-    client_id = secrets.token_urlsafe(24)
-    client_name = data.get("client_name", "MCP client")
+    client_name = str(data.get("client_name", "MCP client"))[:160]
     client_record = {
-        "client_name": str(client_name)[:160],
+        "client_name": client_name,
         "redirect_uris": valid_uris,
         "token_endpoint_auth_method": "none",
     }
+    client_id = _client_id_for(client_record)
     storage_save_oauth_client(client_id, client_record)
     return JSONResponse({
         "client_id": client_id,
@@ -400,31 +441,32 @@ async def oauth_token(request: Request):
         digest = _b64url(hashlib.sha256(verifier.encode()).digest())
         if not secrets.compare_digest(digest, record["code_challenge"]):
             return _oauth_error("invalid_grant")
-        token = secrets.token_urlsafe(40)
-        refresh = secrets.token_urlsafe(40)
         expires_in = 86400
-        access_tokens[token] = {
-            "client_id": client_id, "scope": record["scope"],
+        token = _signed_payload({
+            "type": "access_token", "client_id": client_id, "scope": record["scope"],
             "resource": record["resource"], "expires_at": time.time() + expires_in,
-        }
-        refresh_tokens[refresh] = {"client_id": client_id, "scope": record["scope"], "resource": record["resource"]}
+        })
+        refresh = _signed_payload({
+            "type": "refresh_token", "client_id": client_id, "scope": record["scope"],
+            "resource": record["resource"], "expires_at": time.time() + 90 * 86400,
+        })
         return JSONResponse({
             "access_token": token, "token_type": "Bearer", "expires_in": expires_in,
             "refresh_token": refresh, "scope": record["scope"],
         }, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     if grant_type == "refresh_token":
-        old_refresh = form.get("refresh_token", "")
-        old = refresh_tokens.pop(old_refresh, None)
+        old = _read_signed_payload(form.get("refresh_token", ""), "refresh_token")
         if not old or old["client_id"] != form.get("client_id", ""):
             return _oauth_error("invalid_grant")
-        token = secrets.token_urlsafe(40)
-        refresh = secrets.token_urlsafe(40)
         expires_in = 86400
-        access_tokens[token] = {
-            "client_id": old["client_id"], "scope": old["scope"],
+        token = _signed_payload({
+            "type": "access_token", "client_id": old["client_id"], "scope": old["scope"],
             "resource": old["resource"], "expires_at": time.time() + expires_in,
-        }
-        refresh_tokens[refresh] = old
+        })
+        refresh = _signed_payload({
+            "type": "refresh_token", "client_id": old["client_id"], "scope": old["scope"],
+            "resource": old["resource"], "expires_at": time.time() + 90 * 86400,
+        })
         return JSONResponse({
             "access_token": token, "token_type": "Bearer", "expires_in": expires_in,
             "refresh_token": refresh, "scope": old["scope"],
