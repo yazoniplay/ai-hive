@@ -31,7 +31,7 @@ MCP_URL = PUBLIC_BASE + "/mcp"
 AUTH_ISSUER = PUBLIC_BASE
 LOGIN_PASSWORD = os.getenv("AI_HIVE_LOGIN_PASSWORD", "")
 
- oauth_clients: dict[str, dict[str, Any]] = {}
+oauth_clients: dict[str, dict[str, Any]] = {}
 authorization_codes: dict[str, dict[str, Any]] = {}
 access_tokens: dict[str, dict[str, Any]] = {}
 refresh_tokens: dict[str, dict[str, Any]] = {}
