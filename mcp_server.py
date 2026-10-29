@@ -214,7 +214,9 @@ def _read_signed_payload(token: str, expected_type: str) -> dict[str, Any] | Non
             return None
         padding = "=" * (-len(body) % 4)
         payload = json.loads(base64.urlsafe_b64decode(body + padding))
-        if payload.get("type") != expected_type or float(payload.get("expires_at", 0)) <= time.time():
+        if payload.get("type") != expected_type:
+            return None
+        if expected_type != "oauth_client" and float(payload.get("expires_at", 0)) <= time.time():
             return None
         return payload
     except (ValueError, TypeError, KeyError, json.JSONDecodeError):
