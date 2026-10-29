@@ -245,7 +245,8 @@ async def get_jobs(agent: str):
         if job["agent"] != key or job["status"] == "completed":
             continue
         if job["status"] == "claimed" and now - (job["claimed_at"] or 0) < 180:
-            continue
+            agents[key]["last_seen"] = now
+            return {"jobs": [], "server_time": now}
         job["status"] = "claimed"
         job["claimed_at"] = now
         job["attempts"] += 1
