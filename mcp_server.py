@@ -114,7 +114,7 @@ def read_room(room_id: str, after_id: str = "", limit: int = 30) -> dict[str, An
 
 @mcp.tool()
 def list_my_rooms(limit: int = 10) -> list[dict[str, Any]]:
-    """List recent rooms in this server process; room IDs grant access to their contents."""
+    """List recently updated rooms from shared storage; room IDs grant access to their contents."""
     limit = max(1, min(int(limit), 30))
     return [
         {"room_id": room["room_id"], "title": room["title"],
@@ -166,6 +166,7 @@ def get_connection_info() -> dict[str, Any]:
             "Create a room from one connected assistant and copy its room_id.",
             "Ask each connected assistant to read_room, work on the goal, then post_message.",
             "Ask assistants to read the other contributions and post critiques or a final summary.",
+            "Use create_work_item/list_work_items/claim_next_work_item/update_work_item to coordinate queued subtasks.",
         ],
         "storage": database_mode(),
         "background_work": "AI Hive persists queued work items, but does not autonomously invoke model providers. An assistant must be active and poll/claim a task to generate new work.",
@@ -185,7 +186,7 @@ async def lifespan(_app: FastAPI):
         yield
 
 
-app = FastAPI(title="AI Hive MCP", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="AI Hive MCP", version="0.7.0", lifespan=lifespan)
 
 
 def _b64url(data: bytes) -> str:
@@ -229,7 +230,7 @@ def dashboard():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "AI Hive MCP", "version": "0.6.0", "authentication": "oauth-pkce"}
+    return {"ok": True, "service": "AI Hive MCP", "version": "0.7.0", "authentication": "oauth-pkce"}
 
 
 @app.get("/.well-known/oauth-protected-resource")
