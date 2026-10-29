@@ -101,7 +101,7 @@ def create_room(title: str, goal: str) -> dict[str, Any]:
     if not title.strip() or not goal.strip():
         raise ValueError("title and goal are required")
     room_id = uuid.uuid4().hex
-    full_goal = (goal.strip()[:10000] + "\\n\\n" + AUTONOMOUS_ROOM_RULES)[:12000]
+    full_goal = (goal.strip()[:10000] + "\n\n" + AUTONOMOUS_ROOM_RULES)[:12000]
     room = {
         "room_id": room_id, "title": title.strip()[:160], "goal": full_goal,
         "created_at": time.time(), "updated_at": time.time(), "messages": [],
