@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import mcp_server as hive
-from storage import get_room, list_work_items
+from storage import get_oauth_client, get_room, list_work_items, save_oauth_client
 
 
 def test_health():
@@ -70,3 +70,16 @@ def test_work_queue_is_shared_and_assignment_is_enforced():
 def test_room_ids_are_required_for_work_items():
     with pytest.raises(ValueError):
         hive.create_work_item("not-a-room", "Task", "Description")
+
+
+def test_oauth_client_registration_persists():
+    client_id = "test-client-" + uuid.uuid4().hex
+    record = {
+        "client_name": "Test MCP client",
+        "redirect_uris": ["https://example.com/callback"],
+        "token_endpoint_auth_method": "none",
+    }
+    save_oauth_client(client_id, record)
+    assert get_oauth_client(client_id) == record
+    assert hive._valid_client_redirect(client_id, "https://example.com/callback") is True
+    assert hive._valid_client_redirect(client_id, "https://evil.example/callback") is False
