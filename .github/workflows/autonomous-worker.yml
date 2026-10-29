@@ -21,9 +21,9 @@ jobs:
       - name: Check configuration
         id: config
         env:
-          DATABASE_URL: \${{ secrets.DATABASE_URL }}
-          OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           if [ -z "$DATABASE_URL" ]; then echo "ready=false" >> "$GITHUB_OUTPUT"; echo "Skipping: add DATABASE_URL in repository Actions secrets."; exit 0; fi
           if [ -z "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then echo "ready=false" >> "$GITHUB_OUTPUT"; echo "Skipping: add OPENAI_API_KEY and/or ANTHROPIC_API_KEY in repository Actions secrets."; exit 0; fi
@@ -40,11 +40,11 @@ jobs:
       - name: Run autonomous agent
         if: steps.config.outputs.ready == 'true'
         env:
-          DATABASE_URL: \${{ secrets.DATABASE_URL }}
-          AI_HIVE_TOKEN_SECRET: \${{ secrets.AI_HIVE_TOKEN_SECRET }}
-          OPENAI_API_KEY: \${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
-          GITHUB_TOKEN: \${{ github.token }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          AI_HIVE_TOKEN_SECRET: ${{ secrets.AI_HIVE_TOKEN_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
           AI_HIVE_MAX_TASKS_PER_RUN: "2"
           AI_HIVE_MAX_TOOL_TURNS: "8"
         run: python agent_worker.py
