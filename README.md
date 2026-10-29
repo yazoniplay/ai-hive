@@ -1,52 +1,46 @@
-# AI Hive
+# AI Hive MCP
 
-AI Hive exposes a remote Model Context Protocol (MCP) server for coordinating ChatGPT, Claude, and Gemini through one integration.
+A remote MCP server that sends one request to OpenAI, Anthropic, and Google Gemini through their official APIs and returns all responses in one tool result. Supports cross-review rounds.
 
-## Remote MCP endpoint
+## MCP connection
 
-After deployment, the MCP endpoint is:
+- **Endpoint:** `https://ai-hive.onrender.com/mcp`
+- **Transport:** MCP Streamable HTTP
+- **Health:** `https://ai-hive.onrender.com/health`
 
-`https://ai-hive.onrender.com/mcp`
+Connect an MCP-capable client to the endpoint above.
 
-Connect an MCP-capable client to that URL using **Streamable HTTP**. The MCP tools are:
+## Authenticate the providers
 
-- `list_models` — report whether each AI session connector has checked in recently.
-- `start_collaboration` — send one request to selected models and optionally run cross-review rounds.
-- `get_collaboration` — retrieve status and responses using the returned task ID.
+The server uses **provider API keys**, not passwords, cookies, or consumer subscription logins. Add the keys in the Render dashboard under your service's **Environment** settings. Never commit keys to GitHub or paste them into a chat.
+
+Required environment secrets:
+- `OPENAI_API_KEY` — OpenAI API key for the ChatGPT/OpenAI model.
+- `ANTHROPIC_API_KEY` — Anthropic API key for Claude.
+- `GEMINI_API_KEY` — Google AI Studio API key for Gemini.
+
+Optional model settings:
+- `OPENAI_MODEL` (default `gpt-4.1-mini`)
+- `ANTHROPIC_MODEL` (default `claude-sonnet-4-5`)
+- `GEMINI_MODEL` (default `gemini-2.5-flash`)
+
+After adding or changing environment variables, redeploy/restart the service. Use the `list_models` MCP tool or `/health` endpoint to check whether each key is configured. That check only confirms a key exists; the first real request validates whether it works.
+
+**Billing:** provider API usage is separate from ChatGPT, Claude, or Gemini consumer subscriptions. Each provider may require separate API account setup and billing. Do not assume the APIs are free.
+
+## MCP tools
+
+- `list_models` — show which provider credentials are configured and each model name. It never reveals key values.
+- `start_collaboration` — query multiple models in parallel and optionally run 2–5 rounds of cross-review.
+- `get_collaboration` — retrieve a collaboration by task ID while it remains in server memory.
 - `list_recent_collaborations` — list recent tasks.
 
-## Critical connection limitation
+## Notes
 
-MCP is the integration protocol, not a way to log into consumer AI subscriptions. These tools create and manage AI Hive jobs, but ChatGPT, Claude, and Gemini must still have an actual supported way to process those jobs. The current no-API-key prototype relies on the existing experimental browser connector running in a supported desktop Chromium browser with all selected AI tabs signed in. **This MCP endpoint alone does not make all three models work from an Android phone.** A phone-only, no-API-key setup cannot be promised using MCP alone. Official provider APIs require provider credentials and may incur charges.
-
-## Current web interface
-
-Open the deployed root URL for the mobile-friendly AI Hive web interface. The site can be added to your Android home screen from the browser menu, but the current session connector requirement still applies.
-
-## Deploy
-
-Render deploys from the repository using `render.yaml`. The start command runs `mcp_server:app`, which mounts the MCP endpoint at `/mcp` and keeps the existing web app and API routes available.
-
-## Security and reliability
-
-- This is an early prototype; do not send sensitive personal information.
-- Task state is held in memory and is lost when the free service restarts.
-- The public API currently has no user authentication. Do not treat it as private or production-safe.
-- Website automation is experimental and can break when provider interfaces change.
-- Review model output rather than assuming it is correct.
-
-## API
-
-- `GET /health`
-- `GET /api/state`
-- `GET /api/tasks/{task_id}`
-- `POST /api/tasks`
-- `POST /api/register`
-- `POST /api/message`
-- `GET /api/jobs/{agent}`
-- `POST /api/jobs/{job_id}/result`
-- `WS /ws`
-- `POST/GET via MCP Streamable HTTP: /mcp`
+- Each provider is called directly over HTTPS; no browser extension or open consumer-account browser session is required.
+- Provider/model names and availability can change; model names can be overridden with environment variables.
+- The Render free service may sleep/restart. Collaboration history is currently in memory and is lost after a restart.
+- The endpoint is a prototype and does not yet have user-level authentication. Avoid sending sensitive personal information.
 
 ## License
 
