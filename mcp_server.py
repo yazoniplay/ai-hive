@@ -13,9 +13,11 @@ from storage import (
     create_work_item as storage_create_work_item,
     database_mode,
     get_room as storage_get_room,
+    get_oauth_client as storage_get_oauth_client,
     list_rooms as storage_list_rooms,
     list_work_items as storage_list_work_items,
     save_room,
+    save_oauth_client as storage_save_oauth_client,
     update_work_item as storage_update_work_item,
 )
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -194,7 +196,7 @@ def _b64url(data: bytes) -> str:
 
 
 def _valid_client_redirect(client_id: str, redirect_uri: str) -> bool:
-    client = oauth_clients.get(client_id)
+    client = storage_get_oauth_client(client_id)
     return bool(client and redirect_uri in client["redirect_uris"])
 
 
@@ -281,11 +283,12 @@ async def oauth_register(request: Request):
         valid_uris.append(uri)
     client_id = secrets.token_urlsafe(24)
     client_name = data.get("client_name", "MCP client")
-    oauth_clients[client_id] = {
+    client_record = {
         "client_name": str(client_name)[:160],
         "redirect_uris": valid_uris,
         "token_endpoint_auth_method": "none",
     }
+    storage_save_oauth_client(client_id, client_record)
     return JSONResponse({
         "client_id": client_id,
         "client_name": str(client_name)[:160],

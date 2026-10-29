@@ -61,6 +61,12 @@ def init_db() -> None:
             )
         """)
         _execute(conn, is_postgres, """
+            CREATE TABLE IF NOT EXISTS hive_oauth_clients (
+                client_id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL
+            )
+        """)
+        _execute(conn, is_postgres, """
             CREATE TABLE IF NOT EXISTS hive_work_items (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -73,6 +79,24 @@ def init_db() -> None:
                 updated_at DOUBLE PRECISION NOT NULL
             )
         """)
+
+
+def save_oauth_client(client_id: str, payload: dict[str, Any]) -> None:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    with connection() as (conn, is_postgres):
+        _execute(conn, is_postgres, """
+            INSERT INTO hive_oauth_clients(client_id, payload) VALUES (?, ?)
+            ON CONFLICT(client_id) DO UPDATE SET payload=excluded.payload
+        """, (client_id, data))
+
+
+def get_oauth_client(client_id: str) -> dict[str, Any] | None:
+    with connection() as (conn, is_postgres):
+        row = _execute(conn, is_postgres,
+                       "SELECT payload FROM hive_oauth_clients WHERE client_id = ?", (client_id,)).fetchone()
+    if not row:
+        return None
+    return json.loads(row["payload"] if is_postgres else row["payload"])
 
 
 def save_room(room: dict[str, Any]) -> None:
