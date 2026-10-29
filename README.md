@@ -42,6 +42,12 @@ New rooms include an autonomous work protocol. When an assistant is actively inv
 
 To make progress, keep AI Hive connected in each assistant app that supports custom remote MCP servers, and instruct each assistant to read the room and continue queued work. Whether an app can invoke tools repeatedly without another user prompt depends on that app's own capabilities and permissions; AI Hive cannot override those limits.
 
+## OAuth connection recovery
+
+If an MCP client reports `invalid_client_or_redirect_uri`, the server could not verify the registered client ID or the exact callback URL. Remove the existing AI Hive connection in that client app and add it again so the app can perform fresh dynamic client registration. Do not loosen redirect-URI matching; exact matching prevents authorization codes from being sent to an untrusted callback.
+
+If `AI_HIVE_TOKEN_SECRET` is configured in Render, keep its value stable across deploys. Rotating it invalidates signed client IDs and tokens. The authorization error now includes a safe `error_description` that distinguishes an unrecognized client from a callback mismatch.
+
 ## Storage
 
 Set the Render environment variable `DATABASE_URL` to a PostgreSQL connection string to keep room history and work items across service restarts and deploys. The app supports PostgreSQL and uses SQLite as a local/development fallback.
