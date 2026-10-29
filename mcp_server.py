@@ -7,6 +7,17 @@ import secrets
 import time
 import uuid
 from typing import Any
+
+from storage import (
+    claim_work_item as storage_claim_work_item,
+    create_work_item as storage_create_work_item,
+    database_mode,
+    get_room as storage_get_room,
+    list_rooms as storage_list_rooms,
+    list_work_items as storage_list_work_items,
+    save_room,
+    update_work_item as storage_update_work_item,
+)
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from fastapi import FastAPI, Request
@@ -20,7 +31,6 @@ MCP_URL = PUBLIC_BASE + "/mcp"
 AUTH_ISSUER = PUBLIC_BASE
 LOGIN_PASSWORD = os.getenv("AI_HIVE_LOGIN_PASSWORD", "")
 
-rooms: dict[str, dict[str, Any]] = {}
 oauth_clients: dict[str, dict[str, Any]] = {}
 authorization_codes: dict[str, dict[str, Any]] = {}
 access_tokens: dict[str, dict[str, Any]] = {}
@@ -39,15 +49,16 @@ mcp = FastMCP(
         "It does not call OpenAI, Anthropic, or Google APIs and does not need model API keys. "
         "Use create_room to start a collaboration, share the returned room_id only with "
         "trusted participants, post_message to contribute, and read_room to review everyone's work. "
-        "Each assistant must be connected to this MCP server in its own client and asked to participate."
+        "Each assistant must be connected to this MCP server in its own client and asked to participate. "
+        "Room history and queued work are stored in the configured database; use pseudonymous assistant aliases."
     ),
 )
 
 
 def _room(room_id: str) -> dict[str, Any]:
-    room = rooms.get(room_id)
+    room = storage_get_room(room_id)
     if not room:
-        raise ValueError("Room not found. Check the room_id; rooms are lost on server restart.")
+        raise ValueError("Room not found. Check the room_id and database configuration.")
     return room
 
 
@@ -61,7 +72,7 @@ def create_room(title: str, goal: str) -> dict[str, Any]:
         "room_id": room_id, "title": title.strip()[:160], "goal": goal.strip()[:12000],
         "created_at": time.time(), "updated_at": time.time(), "messages": [],
     }
-    rooms[room_id] = room
+    save_room(room)
     return room
 
 
@@ -79,6 +90,7 @@ def post_message(room_id: str, assistant: str, message: str, kind: str = "contri
     }
     room["messages"].append(entry)
     room["updated_at"] = time.time()
+    save_room(room)
     return {"room_id": room_id, "posted": entry, "message_count": len(room["messages"])}
 
 
@@ -102,13 +114,44 @@ def read_room(room_id: str, after_id: str = "", limit: int = 30) -> dict[str, An
 
 @mcp.tool()
 def list_my_rooms(limit: int = 10) -> list[dict[str, Any]]:
-    """List recent rooms in this server process; room IDs grant access to their contents."""
+    """List recently updated rooms from shared storage; room IDs grant access to their contents."""
     limit = max(1, min(int(limit), 30))
     return [
         {"room_id": room["room_id"], "title": room["title"],
          "message_count": len(room["messages"]), "updated_at": room["updated_at"]}
-        for room in sorted(rooms.values(), key=lambda x: x["updated_at"], reverse=True)[:limit]
+        for room in storage_list_rooms(limit)
     ]
+
+
+@mcp.tool()
+def create_work_item(room_id: str, title: str, description: str) -> dict[str, Any]:
+    """Queue a durable work item in a shared room/project for a connected assistant to claim."""
+    _room(room_id)
+    if not title.strip() or not description.strip():
+        raise ValueError("title and description are required")
+    return storage_create_work_item(room_id, title, description, time.time())
+
+
+@mcp.tool()
+def list_work_items(room_id: str) -> list[dict[str, Any]]:
+    """List queued, active, blocked, completed, and failed work items for a room/project."""
+    _room(room_id)
+    return storage_list_work_items(room_id)
+
+
+@mcp.tool()
+def claim_next_work_item(room_id: str, assistant: str) -> dict[str, Any]:
+    """Claim the oldest queued work item using a pseudonymous assistant alias."""
+    _room(room_id)
+    item = storage_claim_work_item(room_id, assistant, time.time())
+    return item or {"room_id": room_id, "available": False, "message": "No queued work items."}
+
+
+@mcp.tool()
+def update_work_item(room_id: str, item_id: str, status: str, assistant: str, result: str = "") -> dict[str, Any]:
+    """Update a claimed work item with progress or a result; only its assigned alias can update it."""
+    _room(room_id)
+    return storage_update_work_item(room_id, item_id, status, assistant, result, time.time())
 
 
 @mcp.tool()
@@ -123,12 +166,16 @@ def get_connection_info() -> dict[str, Any]:
             "Create a room from one connected assistant and copy its room_id.",
             "Ask each connected assistant to read_room, work on the goal, then post_message.",
             "Ask assistants to read the other contributions and post critiques or a final summary.",
+            "Use create_work_item/list_work_items/claim_next_work_item/update_work_item to coordinate queued subtasks.",
         ],
+        "storage": database_mode(),
+        "background_work": "AI Hive persists queued work items, but does not autonomously invoke model providers. An assistant must be active and poll/claim a task to generate new work.",
         "important_limits": [
             "This server does not log into ChatGPT, Claude, or Gemini on your behalf.",
             "Each provider must support custom remote MCP connections in the app/account you use.",
-            "Room IDs grant access to room contents; share them only with trusted participants.",
-            "Rooms are in-memory and disappear when Render restarts the service.",
+            "Room IDs act as bearer secrets; anyone who knows one can read and post. Share them only with trusted participants.",
+            "PostgreSQL via DATABASE_URL is required for durable data across Render deploys/restarts. SQLite is a development fallback and may be ephemeral on hosted platforms.",
+            "Queued tasks remain stored while the database is available, but this server cannot make a model generate code after its provider session stops without a supported background agent or provider API integration.",
         ],
     }
 
@@ -139,7 +186,7 @@ async def lifespan(_app: FastAPI):
         yield
 
 
-app = FastAPI(title="AI Hive MCP", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="AI Hive MCP", version="0.7.0", lifespan=lifespan)
 
 
 def _b64url(data: bytes) -> str:
@@ -183,7 +230,7 @@ def dashboard():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "AI Hive MCP", "version": "0.6.0", "authentication": "oauth-pkce"}
+    return {"ok": True, "service": "AI Hive MCP", "version": "0.7.0", "authentication": "oauth-pkce"}
 
 
 @app.get("/.well-known/oauth-protected-resource")
