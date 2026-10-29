@@ -261,14 +261,22 @@ def _client_id_for(client_record: dict[str, Any]) -> str:
     return "hive_" + _signed_payload(payload)
 
 
-def _valid_client_redirect(client_id: str, redirect_uri: str) -> bool:
+def _client_redirect_issue(client_id: str, redirect_uri: str) -> str | None:
+    """Return a safe diagnostic category when a dynamic OAuth client cannot be validated."""
     client = storage_get_oauth_client(client_id)
-    if client and redirect_uri in client["redirect_uris"]:
-        return True
-    if not client_id.startswith("hive_"):
-        return False
-    payload = _read_signed_payload(client_id[5:], "oauth_client")
-    return bool(payload and redirect_uri in payload.get("redirect_uris", []))
+    payload = _read_signed_payload(client_id[5:], "oauth_client") if client_id.startswith("hive_") else None
+
+    if client and redirect_uri in client.get("redirect_uris", []):
+        return None
+    if payload and redirect_uri in payload.get("redirect_uris", []):
+        return None
+    if client or payload:
+        return "redirect_uri_mismatch"
+    return "unknown_client"
+
+
+def _valid_client_redirect(client_id: str, redirect_uri: str) -> bool:
+    return _client_redirect_issue(client_id, redirect_uri) is None
 
 
 def _parse_form(body: bytes) -> dict[str, str]:
@@ -276,8 +284,11 @@ def _parse_form(body: bytes) -> dict[str, str]:
     return {key: values[-1] for key, values in parsed.items()}
 
 
-def _oauth_error(error: str, status_code: int = 400) -> JSONResponse:
-    return JSONResponse({"error": error}, status_code=status_code, headers={"Cache-Control": "no-store"})
+def _oauth_error(error: str, status_code: int = 400, description: str = "") -> JSONResponse:
+    body = {"error": error}
+    if description:
+        body["error_description"] = description
+    return JSONResponse(body, status_code=status_code, headers={"Cache-Control": "no-store"})
 
 
 @app.middleware("http")
@@ -379,8 +390,25 @@ async def oauth_authorize(request: Request):
     response_type = q.get("response_type", "")
     challenge = q.get("code_challenge", "")
     challenge_method = q.get("code_challenge_method", "")
-    if not _valid_client_redirect(client_id, redirect_uri):
-        return _oauth_error("invalid_client_or_redirect_uri")
+    redirect_issue = _client_redirect_issue(client_id, redirect_uri)
+    if redirect_issue == "unknown_client":
+        return _oauth_error(
+            "invalid_client_or_redirect_uri",
+            description=(
+                "AI Hive could not verify this OAuth client ID. Its registration may be stale, "
+                "or AI_HIVE_TOKEN_SECRET may have changed. Remove and re-add the AI Hive MCP connection "
+                "to trigger fresh client registration, and keep AI_HIVE_TOKEN_SECRET stable across deploys."
+            ),
+        )
+    if redirect_issue == "redirect_uri_mismatch":
+        return _oauth_error(
+            "invalid_client_or_redirect_uri",
+            description=(
+                "The redirect_uri does not exactly match the URI registered for this OAuth client. "
+                "Remove and re-add the AI Hive MCP connection so the app registers its current callback URI. "
+                "Redirect URI validation remains strict for security."
+            ),
+        )
     if response_type != "code" or not challenge or challenge_method != "S256":
         return _oauth_error("invalid_request_pkce_required")
     if q.get("resource") and q.get("resource") != MCP_URL:
