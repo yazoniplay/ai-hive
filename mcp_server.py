@@ -260,7 +260,7 @@ async def oauth_authorize(request: Request):
         return _oauth_error("invalid_target")
     session = request.cookies.get("ai_hive_session", "")
     if not browser_sessions.get(session, 0) > time.time():
-        return_to = str(request.url)
+        return_to = PUBLIC_BASE + request.url.path + ("?" + request.url.query if request.url.query else "")
         return RedirectResponse("/login?" + urlencode({"return_to": return_to}), status_code=303)
     code = secrets.token_urlsafe(32)
     authorization_codes[code] = {
