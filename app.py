@@ -223,8 +223,10 @@ def get_jobs(agent: str):
         job["claimed_at"] = now
         job["attempts"] += 1
         pending.append({k: job[k] for k in ("id", "task_id", "agent", "round", "prompt", "created_at", "attempts")})
+        # One browser tab can run one response at a time. Do not claim jobs we cannot dispatch.
+        break
     agents[key]["last_seen"] = now
-    return {"jobs": pending[:5], "server_time": now}
+    return {"jobs": pending, "server_time": now}
 
 
 @app.post("/api/jobs/{job_id}/result")
