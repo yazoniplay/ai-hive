@@ -101,6 +101,31 @@ async def finish_round_if_ready(task: dict[str, Any]) -> None:
                       round=task["current_round"], final_responses=final)
 
 
+async def expire_stalled_tasks() -> None:
+    # Avoid a collaboration hanging forever when a selected AI tab is closed or unavailable.
+    now = time.time()
+    for task in list(tasks.values()):
+        if task["status"] != "running" or now - task.get("round_started_at", now) < 360:
+            continue
+        round_number = task["current_round"]
+        responses = task["rounds_data"][round_number - 1]
+        completed = {r["agent"] for r in responses}
+        for agent in task["agents"]:
+            if agent in completed:
+                continue
+            for job in jobs.values():
+                if job["task_id"] == task["id"] and job["round"] == round_number and job["agent"] == agent:
+                    job["status"] = "completed"
+            responses.append({
+                "agent": agent, "name": AGENT_NAMES[agent],
+                "text": "No response received within the 6-minute round timeout. Check that the browser tab is open and the connector is working.",
+                "round": round_number, "time": now, "error": True
+            })
+            await publish("timeout", f"{AGENT_NAMES[agent]} timed out in round {round_number}.",
+                          agent=agent, task_id=task["id"], round=round_number, error=True)
+        await finish_round_if_ready(task)
+
+
 class RegisterBody(BaseModel):
     agent: str
 
@@ -152,7 +177,8 @@ def state_snapshot():
 
 
 @app.get("/api/state")
-def state():
+async def state():
+    await expire_stalled_tasks()
     return state_snapshot()
 
 
@@ -208,7 +234,8 @@ async def create_task(body: StartBody):
 
 
 @app.get("/api/jobs/{agent}")
-def get_jobs(agent: str):
+async def get_jobs(agent: str):
+    await expire_stalled_tasks()
     key = agent.lower()
     if key not in agents:
         raise HTTPException(400, "unknown agent")
