@@ -375,4 +375,5 @@ async def oauth_token(request: Request):
     return _oauth_error("unsupported_grant_type")
 
 
-app.mount("/mcp", mcp.streamable_http_app())
+# The SDK app already serves its protocol endpoint at /mcp; mount at root to avoid /mcp/mcp.
+app.mount("/", mcp.streamable_http_app())
