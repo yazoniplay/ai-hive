@@ -111,3 +111,32 @@ def test_dashboard_requires_password_and_can_create_mission(monkeypatch):
     })
     assert task.status_code == 200
     assert task.json()["task"]["status"] == "queued"
+
+
+def test_oauth_client_id_survives_lost_sqlite_registration(monkeypatch):
+    record = {
+        "client_name": "Stable MCP client",
+        "redirect_uris": ["https://example.com/callback"],
+        "token_endpoint_auth_method": "none",
+    }
+    client_id = hive._client_id_for(record)
+    monkeypatch.setattr(hive, "storage_get_oauth_client", lambda _client_id: None)
+
+    assert hive._client_id_for(record) == client_id
+    assert hive._valid_client_redirect(client_id, "https://example.com/callback") is True
+    assert hive._valid_client_redirect(client_id, "https://attacker.example/callback") is False
+
+
+def test_signed_oauth_tokens_are_stateless_and_expire():
+    token = hive._signed_payload({
+        "type": "access_token",
+        "client_id": "stable-client",
+        "scope": "mcp:tools",
+        "resource": hive.MCP_URL,
+        "expires_at": __import__("time").time() + 60,
+    })
+    decoded = hive._read_signed_payload(token, "access_token")
+    assert decoded is not None
+    assert decoded["client_id"] == "stable-client"
+    assert hive._read_signed_payload(token + "tampered", "access_token") is None
+    assert hive._read_signed_payload(token, "refresh_token") is None
