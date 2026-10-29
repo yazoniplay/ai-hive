@@ -29,7 +29,8 @@ def test_room_messages_persist():
     saved = get_room(room_id)
     assert saved is not None
     assert saved["room_id"] == room_id
-    assert saved["messages"][0]["assistant"] == "Claude"
+    assert saved["messages"][0]["assistant"].startswith("Agent-")
+    assert saved["messages"][0]["assistant"] != "Claude"
     assert saved["messages"][0]["message"] == "Review this implementation."
 
     read = hive.read_room(room_id)
