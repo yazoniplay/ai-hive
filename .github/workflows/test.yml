@@ -20,6 +20,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Compile Python
-        run: python -m compileall -q app.py tests
+        run: python -m compileall -q app.py agent_worker.py tests
       - name: Run tests
         run: pytest -q
