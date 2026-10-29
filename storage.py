@@ -144,6 +144,8 @@ def claim_work_item(project_id: str, assistant: str, now: float) -> dict[str, An
     if not assistant:
         raise ValueError("assistant alias is required")
     with connection() as (conn, is_postgres):
+        if not is_postgres:
+            conn.execute("BEGIN IMMEDIATE")
         if is_postgres:
             row = _execute(conn, True, """
                 SELECT id, project_id, title, description, status, assigned_to, result, created_at, updated_at
@@ -180,8 +182,8 @@ def update_work_item(project_id: str, item_id: str, status: str, assistant: str,
         if not row:
             raise ValueError("Work item not found in this project")
         item = _work_item(row, is_postgres)
-        if item["assigned_to"] and assistant.strip() != item["assigned_to"]:
-            raise ValueError("Only the assigned assistant alias may update this work item")
+        if not item["assigned_to"] or assistant.strip() != item["assigned_to"]:
+            raise ValueError("Claim this work item first; only its assigned assistant alias may update it")
         _execute(conn, is_postgres, """
             UPDATE hive_work_items SET status = ?, result = ?, updated_at = ?
             WHERE id = ? AND project_id = ?
