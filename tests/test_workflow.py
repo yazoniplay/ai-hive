@@ -161,3 +161,48 @@ def test_signed_oauth_tokens_are_stateless_and_expire():
     assert decoded["client_id"] == "stable-client"
     assert hive._read_signed_payload(token + "tampered", "access_token") is None
     assert hive._read_signed_payload(token, "refresh_token") is None
+
+
+def test_oauth_authorize_explains_redirect_uri_mismatch():
+    client_id = "test-client-" + uuid.uuid4().hex
+    save_oauth_client(client_id, {
+        "client_name": "Mismatch test client",
+        "redirect_uris": ["https://client.example/callback"],
+        "token_endpoint_auth_method": "none",
+    })
+    response = TestClient(hive.app).get("/oauth/authorize", params={
+        "client_id": client_id,
+        "redirect_uri": "https://other.example/callback",
+    })
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_client_or_redirect_uri"
+    assert "does not exactly match" in response.json()["error_description"]
+
+
+def test_oauth_authorize_explains_unknown_client():
+    response = TestClient(hive.app).get("/oauth/authorize", params={
+        "client_id": "stale-client-" + uuid.uuid4().hex,
+        "redirect_uri": "https://client.example/callback",
+    })
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_client_or_redirect_uri"
+    assert "AI_HIVE_TOKEN_SECRET" in response.json()["error_description"]
+    assert "Remove and re-add" in response.json()["error_description"]
+
+
+def test_oauth_authorize_explains_signed_client_redirect_mismatch(monkeypatch):
+    record = {
+        "client_name": "Stateless signed client",
+        "redirect_uris": ["https://client.example/callback"],
+        "token_endpoint_auth_method": "none",
+    }
+    client_id = hive._client_id_for(record)
+    monkeypatch.setattr(hive, "storage_get_oauth_client", lambda _client_id: None)
+
+    response = TestClient(hive.app).get("/oauth/authorize", params={
+        "client_id": client_id,
+        "redirect_uri": "https://other.example/callback",
+    })
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_client_or_redirect_uri"
+    assert "does not exactly match" in response.json()["error_description"]
