@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from contextlib import asynccontextmanager
 
 PUBLIC_BASE = os.getenv("AI_HIVE_PUBLIC_URL", "https://ai-hive.onrender.com").rstrip("/")
@@ -28,6 +29,11 @@ browser_sessions: dict[str, float] = {}
 
 mcp = FastMCP(
     "AI Hive",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=["ai-hive.onrender.com", "ai-hive.onrender.com:*"],
+        allowed_origins=["https://ai-hive.onrender.com"],
+    ),
     instructions=(
         "AI Hive is a shared workspace for assistants connected through MCP. "
         "It does not call OpenAI, Anthropic, or Google APIs and does not need model API keys. "
