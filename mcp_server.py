@@ -38,6 +38,7 @@ authorization_codes: dict[str, dict[str, Any]] = {}
 access_tokens: dict[str, dict[str, Any]] = {}
 refresh_tokens: dict[str, dict[str, Any]] = {}
 browser_sessions: dict[str, float] = {}
+dashboard_sessions: dict[str, float] = {}
 
 mcp = FastMCP(
     "AI Hive",
@@ -227,7 +228,7 @@ async def require_mcp_bearer_token(request: Request, call_next):
 
 @app.get("/")
 def dashboard():
-    return FileResponse("static/manual.html")
+    return FileResponse("static/dashboard.html")
 
 
 @app.get("/health")
@@ -429,6 +430,133 @@ async def oauth_token(request: Request):
             "refresh_token": refresh, "scope": old["scope"],
         }, headers={"Cache-Control": "no-store", "Pragma": "no-cache"})
     return _oauth_error("unsupported_grant_type")
+
+
+
+def _dashboard_authenticated(request: Request) -> bool:
+    session = request.cookies.get("ai_hive_dashboard", "")
+    return dashboard_sessions.get(session, 0) > time.time()
+
+
+def _dashboard_unauthorized():
+    return JSONResponse({"error": "Sign in to the AI Hive dashboard first."}, status_code=401)
+
+
+@app.get("/dashboard/api/session")
+def dashboard_session(request: Request):
+    return {"authenticated": _dashboard_authenticated(request)}
+
+
+@app.post("/dashboard/api/login")
+async def dashboard_login(request: Request):
+    if not LOGIN_PASSWORD:
+        return JSONResponse({"error": "Dashboard password is not configured on the server."}, status_code=503)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    password = str(data.get("password", ""))
+    if not secrets.compare_digest(password, LOGIN_PASSWORD):
+        return JSONResponse({"error": "Incorrect workspace password."}, status_code=401)
+    session = secrets.token_urlsafe(32)
+    dashboard_sessions[session] = time.time() + 86400 * 7
+    response = JSONResponse({"ok": True})
+    response.set_cookie("ai_hive_dashboard", session, max_age=86400 * 7, httponly=True,
+                        secure=True, samesite="lax", path="/")
+    return response
+
+
+@app.post("/dashboard/api/logout")
+def dashboard_logout(request: Request):
+    session = request.cookies.get("ai_hive_dashboard", "")
+    dashboard_sessions.pop(session, None)
+    response = JSONResponse({"ok": True})
+    response.delete_cookie("ai_hive_dashboard", path="/")
+    return response
+
+
+@app.get("/dashboard/api/rooms")
+def dashboard_rooms(request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    return {"rooms": [
+        {"room_id": room["room_id"], "title": room["title"], "goal": room.get("goal", ""),
+         "message_count": len(room.get("messages", [])), "updated_at": room.get("updated_at", 0)}
+        for room in storage_list_rooms(30)
+    ]}
+
+
+@app.post("/dashboard/api/rooms")
+async def dashboard_create_room(request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    try:
+        data = await request.json()
+        title = str(data.get("title", "")).strip()
+        goal = str(data.get("goal", "")).strip()
+    except Exception:
+        return JSONResponse({"error": "Send a JSON title and goal."}, status_code=400)
+    if not title or not goal:
+        return JSONResponse({"error": "Title and task are required."}, status_code=400)
+    room_id = uuid.uuid4().hex
+    now = time.time()
+    room = {"room_id": room_id, "title": title[:160], "goal": goal[:12000],
+            "created_at": now, "updated_at": now, "messages": []}
+    save_room(room)
+    post_message(room_id, "Coordinator", "NEW TASK FROM OWNER\n" + goal[:12000], "contribution")
+    return {"room": room}
+
+
+@app.get("/dashboard/api/rooms/{room_id}")
+def dashboard_read_room(room_id: str, request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    room = storage_get_room(room_id)
+    if not room:
+        return JSONResponse({"error": "Room not found."}, status_code=404)
+    return {"room": room, "work_items": storage_list_work_items(room_id)}
+
+
+@app.post("/dashboard/api/rooms/{room_id}/tasks")
+async def dashboard_create_task(room_id: str, request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    room = storage_get_room(room_id)
+    if not room:
+        return JSONResponse({"error": "Room not found."}, status_code=404)
+    try:
+        data = await request.json()
+        title = str(data.get("title", "")).strip()
+        description = str(data.get("description", "")).strip()
+    except Exception:
+        return JSONResponse({"error": "Send a JSON title and description."}, status_code=400)
+    if not title or not description:
+        return JSONResponse({"error": "Task title and instructions are required."}, status_code=400)
+    item = storage_create_work_item(room_id, title, description, time.time())
+    post_message(room_id, "Coordinator", "OWNER TASK: " + title + "\n" + description
+                 + "\nAny connected assistant: claim this task if it fits your role. Use a pseudonymous alias and post progress/results in this room.", "contribution")
+    return {"task": item}
+
+
+@app.post("/dashboard/api/rooms/{room_id}/message")
+async def dashboard_send_message(room_id: str, request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    room = storage_get_room(room_id)
+    if not room:
+        return JSONResponse({"error": "Room not found."}, status_code=404)
+    try:
+        data = await request.json()
+        message = str(data.get("message", "")).strip()
+        kind = str(data.get("kind", "contribution"))
+    except Exception:
+        return JSONResponse({"error": "Send a JSON message."}, status_code=400)
+    if not message:
+        return JSONResponse({"error": "Message cannot be empty."}, status_code=400)
+    if kind not in {"contribution", "critique", "question", "summary"}:
+        kind = "contribution"
+    posted = post_message(room_id, "Coordinator", message[:12000], kind)
+    return {"posted": posted["posted"]}
 
 
 # The SDK app already serves its protocol endpoint at /mcp; mount at root to avoid /mcp/mcp.
