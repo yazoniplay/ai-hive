@@ -83,3 +83,31 @@ def test_oauth_client_registration_persists():
     assert get_oauth_client(client_id) == record
     assert hive._valid_client_redirect(client_id, "https://example.com/callback") is True
     assert hive._valid_client_redirect(client_id, "https://evil.example/callback") is False
+
+
+def test_dashboard_requires_password_and_can_create_mission(monkeypatch):
+    monkeypatch.setattr(hive, "LOGIN_PASSWORD", "dashboard-test-password")
+    client = TestClient(hive.app)
+
+    assert client.get("/dashboard/api/rooms").status_code == 401
+    login = client.post("/dashboard/api/login", json={"password": "dashboard-test-password"})
+    assert login.status_code == 200
+    assert login.json()["ok"] is True
+
+    created = client.post("/dashboard/api/rooms", json={
+        "title": "Dashboard test mission",
+        "goal": "Use anonymous aliases and report progress."
+    })
+    assert created.status_code == 200
+    room_id = created.json()["room"]["room_id"]
+
+    room_response = client.get(f"/dashboard/api/rooms/{room_id}")
+    assert room_response.status_code == 200
+    assert room_response.json()["room"]["messages"][0]["assistant"] == "Coordinator"
+
+    task = client.post(f"/dashboard/api/rooms/{room_id}/tasks", json={
+        "title": "Test task",
+        "description": "Post a short progress report."
+    })
+    assert task.status_code == 200
+    assert task.json()["task"]["status"] == "queued"
