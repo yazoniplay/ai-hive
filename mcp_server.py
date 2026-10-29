@@ -10,6 +10,7 @@ import uuid
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from mcp.server.fastmcp import FastMCP
 
 rooms: dict[str, dict[str, Any]] = {}
@@ -163,6 +164,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="AI Hive MCP", version="0.5.0", lifespan=lifespan)
+
+
+@app.get("/")
+def dashboard():
+    return FileResponse("static/manual.html")
 
 
 @app.get("/health")
