@@ -29,7 +29,7 @@ ALLOWED_SUFFIXES = {".py", ".md", ".txt", ".html", ".css", ".js", ".json", ".yml
 
 def _safe_path(path: str) -> str:
     path = path.strip().lstrip("/")
-    if not path or path.startswith("../") or "/../" in path or "\\\\" in path:
+    if not path or path.startswith("../") or "/../" in path or chr(92) in path:
         raise ValueError("Invalid repository path")
     lowered = path.lower()
     if any(part in lowered for part in DENIED_PATH_PARTS):
