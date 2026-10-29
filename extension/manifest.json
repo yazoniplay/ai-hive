@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "AI Hive Connector",
+  "version": "0.1.0",
+  "description": "Relays activity between logged-in AI chat tabs and AI Hive.",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": ["https://chatgpt.com/*","https://claude.ai/*","https://gemini.google.com/*","https://*.onrender.com/*"],
+  "background": {"service_worker":"background.js"},
+  "content_scripts": [
+    {"matches":["https://chatgpt.com/*"],"js":["connector.js"],"run_at":"document_idle"},
+    {"matches":["https://claude.ai/*"],"js":["connector.js"],"run_at":"document_idle"},
+    {"matches":["https://gemini.google.com/*"],"js":["connector.js"],"run_at":"document_idle"}
+  ],
+  "options_page":"options.html"
+}
