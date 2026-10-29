@@ -1,86 +1,65 @@
-from fastapi.testclient import TestClient
-import app as hive
+import uuid
 
+import pytest
 
-client = TestClient(hive.app)
-
-
-def reset_state():
-    hive.events.clear()
-    hive.tasks.clear()
-    hive.jobs.clear()
-    for value in hive.agents.values():
-        value["last_seen"] = None
+import mcp_server as hive
+from storage import get_room, list_work_items
 
 
 def test_health():
-    response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json()["ok"] is True
+    response = hive.app
+    assert response.title == "AI Hive MCP"
 
 
-def test_task_runs_independent_and_cross_review_rounds():
-    reset_state()
-    created = client.post("/api/tasks", json={
-        "goal": "Design a safe, testable sample project",
-        "rounds": 2,
-        "agents": ["chatgpt", "claude"],
-    })
-    assert created.status_code == 200
-    task = created.json()["task"]
-    task_id = task["id"]
-    assert task["status"] == "running"
-    assert task["current_round"] == 1
+def test_room_messages_persist():
+    suffix = uuid.uuid4().hex
+    room = hive.create_room("Persistence " + suffix, "Test durable room messages")
+    room_id = room["room_id"]
 
-    first_jobs = {}
-    for agent in ("chatgpt", "claude"):
-        response = client.get(f"/api/jobs/{agent}")
-        assert response.status_code == 200
-        first_jobs[agent] = response.json()["jobs"][0]
-        assert first_jobs[agent]["round"] == 1
+    posted = hive.post_message(room_id, "Claude", "Review this implementation.", "contribution")
+    assert posted["message_count"] == 1
 
-    result = client.post(f"/api/jobs/{first_jobs['chatgpt']['id']}/result", json={
-        "agent": "chatgpt", "text": "ChatGPT proposal: add tests and validate inputs."
-    })
-    assert result.status_code == 200
-    assert result.json()["task_status"] == "running"
+    saved = get_room(room_id)
+    assert saved is not None
+    assert saved["room_id"] == room_id
+    assert saved["messages"][0]["assistant"] == "Claude"
+    assert saved["messages"][0]["message"] == "Review this implementation."
 
-    result = client.post(f"/api/jobs/{first_jobs['claude']['id']}/result", json={
-        "agent": "claude", "text": "Claude proposal: add clear error handling."
-    })
-    assert result.status_code == 200
-    assert result.json()["current_round"] == 2
-
-    second_jobs = {}
-    for agent in ("chatgpt", "claude"):
-        response = client.get(f"/api/jobs/{agent}")
-        assert response.status_code == 200
-        second_jobs[agent] = response.json()["jobs"][0]
-        assert second_jobs[agent]["round"] == 2
-        assert "cross-review" in second_jobs[agent]["prompt"].lower()
-        assert "ChatGPT proposal" in second_jobs[agent]["prompt"] or "Claude proposal" in second_jobs[agent]["prompt"]
-
-    client.post(f"/api/jobs/{second_jobs['chatgpt']['id']}/result", json={
-        "agent": "chatgpt", "text": "Improved proposal with tests and error handling."
-    })
-    final = client.post(f"/api/jobs/{second_jobs['claude']['id']}/result", json={
-        "agent": "claude", "text": "Improved proposal with validation and test coverage."
-    })
-    assert final.status_code == 200
-    assert final.json()["task_status"] == "completed"
-
-    saved = client.get(f"/api/tasks/{task_id}").json()
-    assert len(saved["rounds_data"]) == 2
-    assert saved["status"] == "completed"
-    assert len(saved["final_responses"]) == 2
-    assert all(response["round"] == 2 for response in saved["final_responses"])
+    read = hive.read_room(room_id)
+    assert read["total_messages"] == 1
+    assert read["messages"][0]["id"] == posted["posted"]["id"]
 
 
-def test_agent_poll_only_claims_one_job_at_a_time():
-    reset_state()
-    for goal in ("First goal", "Second goal"):
-        client.post("/api/tasks", json={"goal": goal, "rounds": 1, "agents": ["chatgpt", "claude"]})
-    first = client.get("/api/jobs/chatgpt").json()["jobs"]
-    assert len(first) == 1
-    second_poll = client.get("/api/jobs/chatgpt").json()["jobs"]
-    assert second_poll == []
+def test_work_queue_is_shared_and_assignment_is_enforced():
+    suffix = uuid.uuid4().hex
+    room = hive.create_room("Work queue " + suffix, "Test shared queued work")
+    room_id = room["room_id"]
+
+    created = hive.create_work_item(room_id, "Review code", "Check input validation and errors")
+    assert created["status"] == "queued"
+
+    claimed = hive.claim_next_work_item(room_id, "Claude")
+    assert claimed["id"] == created["id"]
+    assert claimed["status"] == "in_progress"
+    assert claimed["assigned_to"] == "Claude"
+
+    empty = hive.claim_next_work_item(room_id, "ChatGPT")
+    assert empty["available"] is False
+
+    with pytest.raises(ValueError):
+        hive.update_work_item(room_id, created["id"], "completed", "ChatGPT", "Wrong agent")
+
+    updated = hive.update_work_item(
+        room_id, created["id"], "completed", "Claude", "Review passed with one minor note."
+    )
+    assert updated["status"] == "completed"
+    assert updated["result"] == "Review passed with one minor note."
+
+    items = list_work_items(room_id)
+    assert len(items) == 1
+    assert items[0]["status"] == "completed"
+
+
+def test_room_ids_are_required_for_work_items():
+    with pytest.raises(ValueError):
+        hive.create_work_item("not-a-room", "Task", "Description")
