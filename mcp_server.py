@@ -500,7 +500,15 @@ async def dashboard_create_room(request: Request):
         return JSONResponse({"error": "Title and task are required."}, status_code=400)
     room_id = uuid.uuid4().hex
     now = time.time()
-    room = {"room_id": room_id, "title": title[:160], "goal": goal[:12000],
+    coordination_rules = (
+        "\\n\\nAI HIVE COORDINATION RULES: Use pseudonymous aliases such as Agent A and Agent B. "
+        "Do not identify your provider or model in room messages. Keep discussion task-focused and do not share personal identifiers. "
+        "Post progress and results as messages (draft typing is not visible to the dashboard). "
+        "If you encounter a quota, rate, usage, or context limit, post a clear LIMIT WARNING immediately. "
+        "Check the room for owner directions; follow PAUSE and CONTINUE SOLO directives when next reading the room. "
+        "Queued tasks require a connected assistant to claim them; this server does not run model inference by itself."
+    )
+    room = {"room_id": room_id, "title": title[:160], "goal": (goal[:10000] + coordination_rules),
             "created_at": now, "updated_at": now, "messages": []}
     save_room(room)
     post_message(room_id, "Coordinator", "NEW TASK FROM OWNER\n" + goal[:12000], "contribution")
