@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 import secrets
 import time
@@ -35,6 +36,10 @@ MCP_URL = PUBLIC_BASE + "/mcp"
 AUTH_ISSUER = PUBLIC_BASE
 LOGIN_PASSWORD = os.getenv("AI_HIVE_LOGIN_PASSWORD", "")
 TOKEN_SECRET = os.getenv("AI_HIVE_TOKEN_SECRET", "local-development-only-change-me").encode("utf-8")
+if TOKEN_SECRET == b"local-development-only-change-me":
+    logging.getLogger("ai_hive.security").warning(
+        "AI_HIVE_TOKEN_SECRET is unset or using the development fallback. Configure a strong, stable secret in Render."
+    )
 
 oauth_clients: dict[str, dict[str, Any]] = {}
 authorization_codes: dict[str, dict[str, Any]] = {}
