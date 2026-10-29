@@ -1,14 +1,21 @@
+import sys
 import uuid
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
+from fastapi.testclient import TestClient
 
 import mcp_server as hive
 from storage import get_room, list_work_items
 
 
 def test_health():
-    response = hive.app
-    assert response.title == "AI Hive MCP"
+    response = TestClient(hive.app).get("/health")
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert response.json()["version"] == "0.7.0"
 
 
 def test_room_messages_persist():
