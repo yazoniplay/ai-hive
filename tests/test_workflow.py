@@ -87,7 +87,7 @@ def test_oauth_client_registration_persists():
 
 def test_dashboard_requires_password_and_can_create_mission(monkeypatch):
     monkeypatch.setattr(hive, "LOGIN_PASSWORD", "dashboard-test-password")
-    client = TestClient(hive.app)
+    client = TestClient(hive.app, base_url="https://testserver")
 
     assert client.get("/dashboard/api/rooms").status_code == 401
     login = client.post("/dashboard/api/login", json={"password": "dashboard-test-password"})
