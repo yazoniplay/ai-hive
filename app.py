@@ -95,7 +95,7 @@ async def finish_round_if_ready(task: dict[str, Any]) -> None:
     else:
         task["status"] = "completed"
         task["completed_at"] = time.time()
-        final = max(task["rounds_data"], key=len) if task["rounds_data"] else []
+        final = task["rounds_data"][-1] if task["rounds_data"] else []
         task["final_responses"] = final
         await publish("completed", f"Collaboration completed: {task['goal']}", task_id=task["id"],
                       round=task["current_round"], final_responses=final)
