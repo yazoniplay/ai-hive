@@ -52,11 +52,14 @@ mcp = FastMCP(
     ),
     instructions=(
         "AI Hive is a shared workspace for assistants connected through MCP. "
-        "It does not call OpenAI, Anthropic, or Google APIs and does not need model API keys. "
-        "Use create_room to start a collaboration, share the returned room_id only with "
-        "trusted participants, post_message to contribute, and read_room to review everyone's work. "
-        "Each assistant must be connected to this MCP server in its own client and asked to participate. "
-        "Room history and queued work are stored in the configured database; use pseudonymous assistant aliases."
+        "It does not call model-provider APIs; the connected assistants generate the work. "
+        "Use pseudonymous aliases only; never disclose provider/model names, account identifiers, or personal details in room messages. "
+        "When you encounter a task, start immediately without asking the user to repeat the task. "
+        "Break it into concrete work items, claim the next available item, do the work, post progress/results, review other agents' results, "
+        "fix issues, and repeat until the queue is empty or a real blocker is reached. "
+        "Coordinate through room messages and work items, and continue independently of user prompts while your own session remains active. "
+        "Never claim the server can wake an inactive model: unattended inference requires a separately configured background agent/provider integration. "
+        "Room IDs are bearer secrets; share them only with trusted participants."
     ),
 )
 
@@ -68,14 +71,39 @@ def _room(room_id: str) -> dict[str, Any]:
     return room
 
 
+AUTONOMOUS_ROOM_RULES = """
+AI HIVE AUTONOMOUS WORK RULES
+- Use only your stable pseudonymous alias in messages and work-item claims. Never name your provider, model, account, or user.
+- Begin the assigned task immediately; do not ask the owner to repeat instructions already present in this room.
+- Convert the goal into small, concrete work items. Claim one, complete it, post progress/results, and update its status.
+- Review other agents' contributions, point out flaws constructively, and improve the result where possible.
+- After each item, inspect the queue and room again; continue while useful work remains and your session is active.
+- If blocked by missing credentials, permissions, quota, or unavailable tools, post a specific blocker and mark the item blocked; never fabricate success.
+- Do not expose secrets, personal data, or private provider/account identifiers.
+- The server stores work but cannot wake an inactive model. True unattended work requires a configured background agent/provider integration.
+""".strip()
+
+
+def _anonymous_alias(alias: str) -> str:
+    """Return a stable room-safe pseudonym without storing the supplied identity."""
+    value = alias.strip()[:80]
+    if not value:
+        raise ValueError("assistant alias is required")
+    if value.casefold() == "coordinator":
+        return "Coordinator"
+    digest = hmac.new(TOKEN_SECRET, value.casefold().encode("utf-8"), hashlib.sha256).hexdigest()[:8]
+    return "Agent-" + digest.upper()
+
+
 @mcp.tool()
 def create_room(title: str, goal: str) -> dict[str, Any]:
     """Create a shared room. Share the returned room_id only with trusted participants."""
     if not title.strip() or not goal.strip():
         raise ValueError("title and goal are required")
     room_id = uuid.uuid4().hex
+    full_goal = (goal.strip()[:10000] + "\\n\\n" + AUTONOMOUS_ROOM_RULES)[:12000]
     room = {
-        "room_id": room_id, "title": title.strip()[:160], "goal": goal.strip()[:12000],
+        "room_id": room_id, "title": title.strip()[:160], "goal": full_goal,
         "created_at": time.time(), "updated_at": time.time(), "messages": [],
     }
     save_room(room)
@@ -91,7 +119,7 @@ def post_message(room_id: str, assistant: str, message: str, kind: str = "contri
     if kind not in {"contribution", "critique", "question", "summary"}:
         raise ValueError("kind must be contribution, critique, question, or summary")
     entry = {
-        "id": uuid.uuid4().hex[:12], "assistant": assistant.strip()[:80],
+        "id": uuid.uuid4().hex[:12], "assistant": _anonymous_alias(assistant),
         "kind": kind, "message": message.strip()[:30000], "created_at": time.time(),
     }
     room["messages"].append(entry)
@@ -149,7 +177,7 @@ def list_work_items(room_id: str) -> list[dict[str, Any]]:
 def claim_next_work_item(room_id: str, assistant: str) -> dict[str, Any]:
     """Claim the oldest queued work item using a pseudonymous assistant alias."""
     _room(room_id)
-    item = storage_claim_work_item(room_id, assistant, time.time())
+    item = storage_claim_work_item(room_id, _anonymous_alias(assistant), time.time())
     return item or {"room_id": room_id, "available": False, "message": "No queued work items."}
 
 
@@ -157,7 +185,7 @@ def claim_next_work_item(room_id: str, assistant: str) -> dict[str, Any]:
 def update_work_item(room_id: str, item_id: str, status: str, assistant: str, result: str = "") -> dict[str, Any]:
     """Update a claimed work item with progress or a result; only its assigned alias can update it."""
     _room(room_id)
-    return storage_update_work_item(room_id, item_id, status, assistant, result, time.time())
+    return storage_update_work_item(room_id, item_id, status, _anonymous_alias(assistant), result, time.time())
 
 
 @mcp.tool()
@@ -175,11 +203,12 @@ def get_connection_info() -> dict[str, Any]:
             "Use create_work_item/list_work_items/claim_next_work_item/update_work_item to coordinate queued subtasks.",
         ],
         "storage": database_mode(),
-        "background_work": "AI Hive persists queued work items, but does not autonomously invoke model providers. An assistant must be active and poll/claim a task to generate new work.",
+        "background_work": "Room instructions direct active assistants to self-assign, complete, review, and continue queued work without repeated user prompts. The server cannot wake an inactive model; true unattended inference requires a separately configured background agent/provider integration.",
         "important_limits": [
             "This server does not log into ChatGPT, Claude, or Gemini on your behalf.",
             "Each provider must support custom remote MCP connections in the app/account you use.",
             "Room IDs act as bearer secrets; anyone who knows one can read and post. Share them only with trusted participants.",
+            "Room messages use stable HMAC-derived Agent aliases; this hides supplied labels from other room participants but is pseudonymization, not anonymity from model providers or the hosting platform.",
             "PostgreSQL via DATABASE_URL is required for durable data across Render deploys/restarts. SQLite is a development fallback and may be ephemeral on hosted platforms.",
             "Queued tasks remain stored while the database is available, but this server cannot make a model generate code after its provider session stops without a supported background agent or provider API integration.",
         ],
@@ -543,8 +572,8 @@ async def dashboard_create_room(request: Request):
     room_id = uuid.uuid4().hex
     now = time.time()
     coordination_rules = (
-        "\\n\\nAI HIVE COORDINATION RULES: Use pseudonymous aliases such as Agent A and Agent B. "
-        "Do not identify your provider or model in room messages. Keep discussion task-focused and do not share personal identifiers. "
+        "\\n\\nAI HIVE AUTONOMOUS COLLABORATION RULES: Use stable pseudonymous aliases. "
+        "Do not identify your provider/model or share personal identifiers. Start the task immediately, create/claim work items, post progress, review other agents, and continue while your session is active. "
         "Post progress and results as messages (draft typing is not visible to the dashboard). "
         "If you encounter a quota, rate, usage, or context limit, post a clear LIMIT WARNING immediately. "
         "Check the room for owner directions; follow PAUSE and CONTINUE SOLO directives when next reading the room. "
