@@ -188,3 +188,21 @@ def test_oauth_authorize_explains_unknown_client():
     assert response.json()["error"] == "invalid_client_or_redirect_uri"
     assert "AI_HIVE_TOKEN_SECRET" in response.json()["error_description"]
     assert "Remove and re-add" in response.json()["error_description"]
+
+
+def test_oauth_authorize_explains_signed_client_redirect_mismatch(monkeypatch):
+    record = {
+        "client_name": "Stateless signed client",
+        "redirect_uris": ["https://client.example/callback"],
+        "token_endpoint_auth_method": "none",
+    }
+    client_id = hive._client_id_for(record)
+    monkeypatch.setattr(hive, "storage_get_oauth_client", lambda _client_id: None)
+
+    response = TestClient(hive.app).get("/oauth/authorize", params={
+        "client_id": client_id,
+        "redirect_uri": "https://other.example/callback",
+    })
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_client_or_redirect_uri"
+    assert "does not exactly match" in response.json()["error_description"]
