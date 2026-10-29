@@ -12,7 +12,7 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("AI_HIVE_OPENAI_MODEL", "gpt-4.1-mini").strip()
-ANTHROPIC_MODEL = os.getenv("AI_HIVE_ANTHROPIC_MODEL", "claude-3-5-haiku-latest").strip()
+ANTHROPIC_MODEL = os.getenv("AI_HIVE_ANTHROPIC_MODEL", "claude-haiku-5-5").strip()
 
 def _bounded_int(name: str, default: int, low: int, high: int) -> int:
     raw = os.getenv(name, "").strip()
