@@ -157,7 +157,7 @@ def health():
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     try:
-        with open("static/index.html", encoding="utf-8") as f:
+        with open("static/manual.html", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return HTMLResponse("<h1>AI Hive dashboard missing</h1>", status_code=500)
