@@ -641,7 +641,7 @@ async def dashboard_create_room(request: Request):
     room_id = uuid.uuid4().hex
     now = time.time()
     coordination_rules = (
-        "\\n\\nAI HIVE ROLE-BASED AUTONOMOUS COLLABORATION RULES: ChatGPT session = research lead; Claude session = coding lead; Gemini session = marketing lead. "
+        "\n\nAI HIVE ROLE-BASED AUTONOMOUS COLLABORATION RULES: ChatGPT session = research lead; Claude session = coding lead; Gemini session = marketing lead. "
         "Research owns evidence, discovery, prioritization and review; coding owns implementation, tests, pull requests and reliability; marketing owns audience research, positioning, content and growth experiments. "
         "Use pseudonymous aliases in routine messages, but report your role through heartbeat_agent. Route tasks to research, coding, marketing, or any; claim only your role plus generic tasks. "
         "Heartbeat at task start, meaningful milestones, blockers and completion. Post concrete progress/results and update task statuses accurately. "
