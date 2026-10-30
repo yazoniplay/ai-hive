@@ -38,6 +38,19 @@ def test_room_messages_persist():
     assert read["messages"][0]["id"] == posted["posted"]["id"]
 
 
+def test_concurrent_backlog_seeders_do_not_duplicate_role_tasks():
+    from concurrent.futures import ThreadPoolExecutor
+
+    room = hive.create_room("Concurrent seed test", "Avoid duplicate role work")
+    room_id = room["room_id"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: hive.seed_role_backlog(room_id), range(2)))
+
+    assert sum(len(result["created"]) for result in results) == 3
+    assert len(hive.list_work_items(room_id)) == 3
+    assert {item["role"] for item in hive.list_work_items(room_id)} == {"research", "coding", "marketing"}
+
+
 def test_seed_role_backlog_fills_empty_lanes_without_duplicate_active_tasks():
     room = hive.create_room("Backlog seed test", "Run a three-leader operation")
     room_id = room["room_id"]
