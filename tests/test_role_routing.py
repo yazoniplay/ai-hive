@@ -3,6 +3,10 @@ import os
 import sqlite3
 import tempfile
 import unittest
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _TEST_DIR = tempfile.TemporaryDirectory()
 os.environ["DATABASE_URL"] = ""
