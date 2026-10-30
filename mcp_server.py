@@ -59,6 +59,7 @@ mcp = FastMCP(
         "The team has three role lanes: research (discovery, evidence, prioritization), coding (implementation, tests, reviews), and marketing (positioning, audience research, content, growth experiments). "
         "Create role-targeted tasks and claim only work matching your declared role plus generic tasks. "
         "Send heartbeat_agent updates at task start, milestones, blockers, and completion; use list_agents/get_team_status to coordinate. "
+        "When a role lane has no queued or in-progress task, call seed_role_backlog to refill all empty lanes without duplicating active work. "
         "When you encounter a task, start immediately without asking the user to repeat the task. "
         "Break it into concrete work items, claim the next available item, do the work, post progress/results, review other agents' results, "
         "fix issues, and repeat until the queue is empty or a real blocker is reached. "
@@ -292,6 +293,7 @@ def get_connection_info() -> dict[str, Any]:
             "Ask assistants to read the other contributions and post critiques or a final summary.",
             "Use create_work_item/list_work_items/claim_next_work_item/update_work_item to coordinate queued subtasks.",
         "Use heartbeat_agent/list_agents/get_team_status for role-aware presence and stale-heartbeat visibility.",
+        "Use seed_role_backlog to create a starter task for each empty leadership lane without duplicating active tasks.",
         ],
         "storage": database_mode(),
         "background_work": "Room instructions direct active assistants to self-assign, complete, review, and continue queued work without repeated user prompts. The server cannot wake an inactive model; true unattended inference requires a separately configured background agent/provider integration.",
@@ -720,6 +722,15 @@ def dashboard_list_agents(room_id: str, request: Request):
     if not storage_get_room(room_id):
         return JSONResponse({"error": "Room not found."}, status_code=404)
     return {"agents": storage_list_agents(room_id, time.time())}
+
+
+@app.post("/dashboard/api/rooms/{room_id}/seed-backlog")
+def dashboard_seed_backlog(room_id: str, request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    if not storage_get_room(room_id):
+        return JSONResponse({"error": "Room not found."}, status_code=404)
+    return seed_role_backlog(room_id)
 
 
 @app.post("/dashboard/api/rooms/{room_id}/tasks")
