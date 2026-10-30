@@ -38,6 +38,31 @@ def test_room_messages_persist():
     assert read["messages"][0]["id"] == posted["posted"]["id"]
 
 
+def test_role_routing_and_agent_heartbeats():
+    room = hive.create_room("Role routing test", "Keep leadership lanes distinct")
+    room_id = room["room_id"]
+    task = hive.create_work_item(room_id, "Implement test", "Add regression coverage", role="coding")
+
+    wrong_role = hive.claim_next_work_item(room_id, "Gemini", role="marketing")
+    assert wrong_role["available"] is False
+
+    claimed = hive.claim_next_work_item(room_id, "Claude", role="coding")
+    assert claimed["id"] == task["id"]
+    assert claimed["role"] == "coding"
+
+    heartbeat = hive.heartbeat_agent(
+        room_id, "Claude", "coding", "working", "Implementing tests", "Unit tests in progress"
+    )
+    assert heartbeat["role"] == "coding"
+    agents = hive.list_agents(room_id)
+    assert len(agents) == 1
+    assert agents[0]["role"] == "coding"
+    assert agents[0]["effective_status"] == "working"
+    status = hive.get_team_status(room_id)
+    assert status["task_counts"]["in_progress"] == 1
+    assert status["active_agents"] == 1
+
+
 def test_work_queue_is_shared_and_assignment_is_enforced():
     suffix = uuid.uuid4().hex
     room = hive.create_room("Work queue " + suffix, "Test shared queued work")
@@ -132,6 +157,18 @@ def test_dashboard_requires_password_and_can_create_mission(monkeypatch):
     })
     assert task.status_code == 200
     assert task.json()["task"]["status"] == "queued"
+    assert task.json()["task"]["role"] == "any"
+
+    routed = client.post(f"/dashboard/api/rooms/{room_id}/tasks", json={
+        "title": "Draft campaign",
+        "description": "Research positioning and draft three messages.",
+        "role": "marketing",
+    })
+    assert routed.status_code == 200
+    assert routed.json()["task"]["role"] == "marketing"
+    assert client.get(f"/dashboard/api/rooms/{room_id}/agents").status_code == 200
+    status = client.get("/dashboard/api/status").json()
+    assert "durable_storage_configured" in status
 
 
 def test_oauth_client_id_survives_lost_sqlite_registration(monkeypatch):
