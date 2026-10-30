@@ -345,7 +345,14 @@ def dashboard():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "AI Hive MCP", "version": "0.7.0", "authentication": "oauth-pkce"}
+    mode = database_mode()
+    return {
+        "ok": True, "service": "AI Hive MCP", "version": "0.8.0",
+        "authentication": "oauth-pkce", "storage": mode,
+        "durable_storage_configured": mode == "postgresql",
+        "storage_warning": "" if mode == "postgresql" else
+            "SQLite fallback may lose rooms and queued tasks across hosted restarts or deploys. Configure DATABASE_URL for PostgreSQL.",
+    }
 
 
 @app.get("/.well-known/oauth-protected-resource")
@@ -586,6 +593,23 @@ def dashboard_logout(request: Request):
     response = JSONResponse({"ok": True})
     response.delete_cookie("ai_hive_dashboard", path="/")
     return response
+
+
+@app.get("/dashboard/api/status")
+def dashboard_status(request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    mode = database_mode()
+    rooms = storage_list_rooms(30)
+    return {
+        "storage": mode,
+        "durable_storage_configured": mode == "postgresql",
+        "storage_warning": "" if mode == "postgresql" else
+            "SQLite fallback may lose rooms and tasks across hosted restarts/deploys. Configure DATABASE_URL for PostgreSQL.",
+        "room_count": len(rooms),
+        "task_count": sum(len(storage_list_work_items(room["room_id"])) for room in rooms),
+        "server_time": time.time(),
+    }
 
 
 @app.get("/dashboard/api/rooms")
