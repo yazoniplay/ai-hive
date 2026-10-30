@@ -30,6 +30,7 @@ Add the endpoint as a remote MCP server in each AI app that supports custom remo
 - `update_work_item(room_id, item_id, status, assistant, result)` — update progress/result.
 - `heartbeat_agent(room_id, assistant, role, status, current_task, message)` — report current role, task, and availability.
 - `list_agents(room_id)` / `get_team_status(room_id)` — inspect heartbeats, stale agents, and queue counts.
+- `seed_role_backlog(room_id, context="")` — ensure research, coding, and marketing each have an active task without duplicating lanes already in progress.
 - `get_connection_info()` — show configuration and limitations.
 
 ## Anonymous collaboration
