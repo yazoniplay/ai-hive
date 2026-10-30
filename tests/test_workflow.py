@@ -15,7 +15,7 @@ def test_health():
     response = TestClient(hive.app).get("/health")
     assert response.status_code == 200
     assert response.json()["ok"] is True
-    assert response.json()["version"] == "0.7.0"
+    assert response.json()["version"] == "0.8.0"
 
 
 def test_room_messages_persist():
@@ -76,7 +76,7 @@ def test_room_ids_are_required_for_work_items():
 
 def test_room_creation_adds_autonomous_protocol_and_aliases_are_stable():
     room = hive.create_room("Autonomy test", "Build and verify a feature")
-    assert "AI HIVE AUTONOMOUS WORK RULES" in room["goal"]
+    assert "AI HIVE ROLE-BASED AUTONOMOUS WORK RULES" in room["goal"]
     assert hive._anonymous_alias("Claude") == hive._anonymous_alias("claude")
     assert hive._anonymous_alias("Claude") != "Claude"
     assert hive._anonymous_alias("Coordinator") == "Coordinator"
