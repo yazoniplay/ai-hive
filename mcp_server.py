@@ -77,15 +77,18 @@ def _room(room_id: str) -> dict[str, Any]:
 
 
 AUTONOMOUS_ROOM_RULES = """
-AI HIVE AUTONOMOUS WORK RULES
-- Use only your stable pseudonymous alias in messages and work-item claims. Never name your provider, model, account, or user.
-- Begin the assigned task immediately; do not ask the owner to repeat instructions already present in this room.
-- Convert the goal into small, concrete work items. Claim one, complete it, post progress/results, and update its status.
-- Review other agents' contributions, point out flaws constructively, and improve the result where possible.
-- After each item, inspect the queue and room again; continue while useful work remains and your session is active.
-- If blocked by missing credentials, permissions, quota, or unavailable tools, post a specific blocker and mark the item blocked; never fabricate success.
-- Do not expose secrets, personal data, or private provider/account identifiers.
-- The server stores work but cannot wake an inactive model. True unattended work requires a configured background agent/provider integration.
+AI HIVE ROLE-BASED AUTONOMOUS WORK RULES
+- Owner-defined leadership lanes: ChatGPT session = research lead; Claude session = coding lead; Gemini session = marketing lead. Routine room messages use pseudonymous aliases; heartbeats include the assigned role.
+- Research owns evidence gathering, repository/product discovery, prioritization, validation, and independent review.
+- Coding owns architecture, implementation, tests, pull requests, reliability, and technical review.
+- Marketing owns audience/competitor research, positioning, messaging, content, and measurable growth experiments.
+- Begin work immediately without asking the owner to repeat instructions already present in this room.
+- Convert goals into small tasks routed to research, coding, marketing, or any. Claim only your role's tasks plus generic tasks; never take another role's work.
+- Send heartbeat_agent at task start, meaningful milestones, blockers, and completion. Post evidence and update task status accurately.
+- Review other agents' contributions, fix flaws constructively, and continue while your session is active.
+- If blocked by credentials, permissions, quota, or unavailable tools, post the exact blocker and mark the task blocked; never fabricate success.
+- Do not expose secrets, personal data, or private account identifiers.
+- The server stores work but cannot wake an inactive model. True unattended work requires a configured background-agent/provider integration.
 """.strip()
 
 
@@ -638,13 +641,14 @@ async def dashboard_create_room(request: Request):
     room_id = uuid.uuid4().hex
     now = time.time()
     coordination_rules = (
-        "\\n\\nAI HIVE AUTONOMOUS COLLABORATION RULES: Use stable pseudonymous aliases. "
-        "Do not identify your provider/model or share personal identifiers. Start the task immediately, create/claim work items, post progress, review other agents, and continue while your session is active. "
-        "Post progress and results as messages (draft typing is not visible to the dashboard). "
+        "\\n\\nAI HIVE ROLE-BASED AUTONOMOUS COLLABORATION RULES: ChatGPT session = research lead; Claude session = coding lead; Gemini session = marketing lead. "
+        "Research owns evidence, discovery, prioritization and review; coding owns implementation, tests, pull requests and reliability; marketing owns audience research, positioning, content and growth experiments. "
+        "Use pseudonymous aliases in routine messages, but report your role through heartbeat_agent. Route tasks to research, coding, marketing, or any; claim only your role plus generic tasks. "
+        "Heartbeat at task start, meaningful milestones, blockers and completion. Post concrete progress/results and update task statuses accurately. "
         "If you encounter a quota, rate, usage, or context limit, post a clear LIMIT WARNING immediately. "
         "Check the room for owner directions; follow PAUSE and CONTINUE SOLO directives when next reading the room. "
         "Queued tasks require a connected assistant to claim them; this server does not run model inference by itself."
-    )
+    )   )
     room = {"room_id": room_id, "title": title[:160], "goal": (goal[:10000] + coordination_rules),
             "created_at": now, "updated_at": now, "messages": []}
     save_room(room)
