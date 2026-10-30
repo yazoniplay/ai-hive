@@ -648,7 +648,7 @@ async def dashboard_create_room(request: Request):
         "If you encounter a quota, rate, usage, or context limit, post a clear LIMIT WARNING immediately. "
         "Check the room for owner directions; follow PAUSE and CONTINUE SOLO directives when next reading the room. "
         "Queued tasks require a connected assistant to claim them; this server does not run model inference by itself."
-    )   )
+    )
     room = {"room_id": room_id, "title": title[:160], "goal": (goal[:10000] + coordination_rules),
             "created_at": now, "updated_at": now, "messages": []}
     save_room(room)
