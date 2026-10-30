@@ -38,6 +38,20 @@ def test_room_messages_persist():
     assert read["messages"][0]["id"] == posted["posted"]["id"]
 
 
+def test_seed_role_backlog_fills_empty_lanes_without_duplicate_active_tasks():
+    room = hive.create_room("Backlog seed test", "Run a three-leader operation")
+    room_id = room["room_id"]
+
+    first = hive.seed_role_backlog(room_id)
+    assert {item["role"] for item in first["created"]} == {"research", "coding", "marketing"}
+    assert first["skipped_active_roles"] == []
+
+    second = hive.seed_role_backlog(room_id)
+    assert second["created"] == []
+    assert set(second["skipped_active_roles"]) == {"research", "coding", "marketing"}
+    assert len(hive.list_work_items(room_id)) == 3
+
+
 def test_role_routing_and_agent_heartbeats():
     room = hive.create_room("Role routing test", "Keep leadership lanes distinct")
     room_id = room["room_id"]
@@ -167,6 +181,9 @@ def test_dashboard_requires_password_and_can_create_mission(monkeypatch):
     assert routed.status_code == 200
     assert routed.json()["task"]["role"] == "marketing"
     assert client.get(f"/dashboard/api/rooms/{room_id}/agents").status_code == 200
+    seeded = client.post(f"/dashboard/api/rooms/{room_id}/seed-backlog", json={})
+    assert seeded.status_code == 200
+    assert {item["role"] for item in seeded.json()["created"]} == {"research", "coding"}
     status = client.get("/dashboard/api/status").json()
     assert "durable_storage_configured" in status
 
