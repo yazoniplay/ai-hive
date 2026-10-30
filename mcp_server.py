@@ -214,6 +214,53 @@ def list_agents(room_id: str, stale_after_seconds: int = 900) -> list[dict[str, 
 
 
 @mcp.tool()
+def seed_role_backlog(room_id: str, context: str = "") -> dict[str, Any]:
+    """Ensure each leadership lane has one queued or in-progress task; safe to call repeatedly."""
+    room = _room(room_id)
+    items = storage_list_work_items(room_id)
+    defaults = {
+        "research": (
+            "Research cycle",
+            "Investigate the mission and accessible repositories. Gather concrete evidence, rank the top three unresolved opportunities, "
+            "and create role-routed follow-up tasks for validated findings. Separate facts from assumptions and link source files/issues."
+        ),
+        "coding": (
+            "Engineering cycle",
+            "Inspect the highest-priority open engineering issue relevant to the mission. Implement one narrow, useful improvement, add or update regression tests, "
+            "run available checks, and report exact files, commit/PR, test results, and any risks. Do not claim checks you did not run."
+        ),
+        "marketing": (
+            "Marketing cycle",
+            "Identify the most relevant audience and competing alternatives for the mission. Produce evidence-backed positioning, three low-cost growth experiments, "
+            "and measurable success criteria. Create follow-up marketing tasks and avoid spam, fabricated claims, or unapproved outreach."
+        ),
+    }
+    created = []
+    skipped = []
+    now = time.time()
+    for role, (title, description) in defaults.items():
+        active = any(item.get("role", "any") == role and item["status"] in {"queued", "in_progress"}
+                     for item in items)
+        if active:
+            skipped.append(role)
+            continue
+        cycle = 1 + sum(1 for item in items if item.get("role", "any") == role)
+        full_description = (
+            "MISSION CONTEXT:\n" + room.get("goal", "")[:5000]
+            + ("\n\nOWNER/AGENT CONTEXT:\n" + context.strip()[:2000] if context.strip() else "")
+            + "\n\nEXPECTED OUTPUT:\n" + description
+            + "\n\nCONTINUATION: When completed, post evidence, update this task, inspect the queue, and seed/claim the next useful task for your own lane."
+        )
+        created.append(storage_create_work_item(
+            room_id, f"{title} {cycle}", full_description, now, role=role
+        ))
+    if created:
+        summary = "ROLE BACKLOG SEEDED: " + ", ".join(item["role"] + ": " + item["title"] for item in created)
+        post_message(room_id, "Coordinator", summary, "contribution")
+    return {"room_id": room_id, "created": created, "skipped_active_roles": skipped}
+
+
+@mcp.tool()
 def get_team_status(room_id: str) -> dict[str, Any]:
     """Summarize agent presence and task counts for the dashboard or coordination."""
     _room(room_id)
