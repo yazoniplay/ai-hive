@@ -181,6 +181,78 @@ def create_work_item(project_id: str, title: str, description: str, now: float,
     return item
 
 
+def ensure_role_backlog(project_id: str, task_specs: list[dict[str, str]],
+                        now: float) -> tuple[list[dict[str, Any]], list[str]]:
+    """Atomically ensure one active task per role, safe under concurrent seeding calls."""
+    import uuid
+
+    for spec in task_specs:
+        role = str(spec.get("role", "")).strip().lower()
+        if role not in VALID_ROLES - {"any"}:
+            raise ValueError("backlog roles must be research, coding, or marketing")
+        if not str(spec.get("title", "")).strip() or not str(spec.get("description", "")).strip():
+            raise ValueError("each backlog task requires a title and description")
+
+    created: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    with connection() as (conn, is_postgres):
+        if is_postgres:
+            # Serialize seeders for this room; lock is released at transaction end.
+            _execute(conn, True, "SELECT pg_advisory_xact_lock(hashtext(?))", (project_id,))
+        else:
+            conn.execute("BEGIN IMMEDIATE")
+
+        active_rows = _execute(conn, is_postgres, """
+            SELECT role FROM hive_work_items
+            WHERE project_id = ? AND status IN ('queued', 'in_progress')
+              AND role IN ('research', 'coding', 'marketing')
+        """, (project_id,)).fetchall()
+        active_roles = {
+            row["role"] if is_postgres else row[0]
+            for row in active_rows
+        }
+        count_rows = _execute(conn, is_postgres, """
+            SELECT role, COUNT(*) AS total FROM hive_work_items
+            WHERE project_id = ? AND role IN ('research', 'coding', 'marketing')
+            GROUP BY role
+        """, (project_id,)).fetchall()
+        counts = {
+            (row["role"] if is_postgres else row[0]):
+            int(row["total"] if is_postgres else row[1])
+            for row in count_rows
+        }
+
+        for spec in task_specs:
+            role = spec["role"].strip().lower()
+            if role in active_roles:
+                skipped.append(role)
+                continue
+            cycle = counts.get(role, 0) + 1
+            item = {
+                "id": uuid.uuid4().hex,
+                "project_id": project_id,
+                "title": f'{spec["title"].strip()} {cycle}'[:160],
+                "description": spec["description"].strip()[:12000],
+                "role": role,
+                "status": "queued",
+                "assigned_to": "",
+                "result": "",
+                "created_at": now,
+                "updated_at": now,
+            }
+            _execute(conn, is_postgres, """
+                INSERT INTO hive_work_items
+                (id, project_id, title, description, role, status, assigned_to, result, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (item["id"], item["project_id"], item["title"], item["description"], item["role"],
+                  item["status"], item["assigned_to"], item["result"], now, now))
+            created.append(item)
+            active_roles.add(role)
+            counts[role] = cycle
+
+    return created, skipped
+
+
 def _work_item(row, is_postgres: bool) -> dict[str, Any]:
     keys = ("id", "project_id", "title", "description", "role", "status", "assigned_to",
             "result", "created_at", "updated_at")
