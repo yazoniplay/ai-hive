@@ -14,6 +14,7 @@ from storage import (
     claim_work_item as storage_claim_work_item,
     create_work_item as storage_create_work_item,
     database_mode,
+    ensure_role_backlog as storage_ensure_role_backlog,
     get_room as storage_get_room,
     get_oauth_client as storage_get_oauth_client,
     heartbeat_agent as storage_heartbeat_agent,
@@ -216,9 +217,8 @@ def list_agents(room_id: str, stale_after_seconds: int = 900) -> list[dict[str, 
 
 @mcp.tool()
 def seed_role_backlog(room_id: str, context: str = "") -> dict[str, Any]:
-    """Ensure each leadership lane has one queued or in-progress task; safe to call repeatedly."""
+    """Atomically ensure each leadership lane has one queued/in-progress task; safe under concurrent calls."""
     room = _room(room_id)
-    items = storage_list_work_items(room_id)
     defaults = {
         "research": (
             "Research cycle",
@@ -236,25 +236,17 @@ def seed_role_backlog(room_id: str, context: str = "") -> dict[str, Any]:
             "and measurable success criteria. Create follow-up marketing tasks and avoid spam, fabricated claims, or unapproved outreach."
         ),
     }
-    created = []
-    skipped = []
     now = time.time()
-    for role, (title, description) in defaults.items():
-        active = any(item.get("role", "any") == role and item["status"] in {"queued", "in_progress"}
-                     for item in items)
-        if active:
-            skipped.append(role)
-            continue
-        cycle = 1 + sum(1 for item in items if item.get("role", "any") == role)
+    specs = []
+    for role, (title, expected_output) in defaults.items():
         full_description = (
             "MISSION CONTEXT:\n" + room.get("goal", "")[:5000]
             + ("\n\nOWNER/AGENT CONTEXT:\n" + context.strip()[:2000] if context.strip() else "")
-            + "\n\nEXPECTED OUTPUT:\n" + description
+            + "\n\nEXPECTED OUTPUT:\n" + expected_output
             + "\n\nCONTINUATION: When completed, post evidence, update this task, inspect the queue, and seed/claim the next useful task for your own lane."
         )
-        created.append(storage_create_work_item(
-            room_id, f"{title} {cycle}", full_description, now, role=role
-        ))
+        specs.append({"role": role, "title": title, "description": full_description})
+    created, skipped = storage_ensure_role_backlog(room_id, specs, now)
     if created:
         summary = "ROLE BACKLOG SEEDED: " + ", ".join(item["role"] + ": " + item["title"] for item in created)
         post_message(room_id, "Coordinator", summary, "contribution")
