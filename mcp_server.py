@@ -14,8 +14,11 @@ from storage import (
     claim_work_item as storage_claim_work_item,
     create_work_item as storage_create_work_item,
     database_mode,
+    ensure_role_backlog as storage_ensure_role_backlog,
     get_room as storage_get_room,
     get_oauth_client as storage_get_oauth_client,
+    heartbeat_agent as storage_heartbeat_agent,
+    list_agents as storage_list_agents,
     list_rooms as storage_list_rooms,
     list_work_items as storage_list_work_items,
     save_room,
@@ -54,6 +57,10 @@ mcp = FastMCP(
         "AI Hive is a shared workspace for assistants connected through MCP. "
         "It does not call model-provider APIs; the connected assistants generate the work. "
         "Use pseudonymous aliases only; never disclose provider/model names, account identifiers, or personal details in room messages. "
+        "The team has three role lanes: research (discovery, evidence, prioritization), coding (implementation, tests, reviews), and marketing (positioning, audience research, content, growth experiments). "
+        "Create role-targeted tasks and claim only work matching your declared role plus generic tasks. "
+        "Send heartbeat_agent updates at task start, milestones, blockers, and completion; use list_agents/get_team_status to coordinate. "
+        "When a role lane has no queued or in-progress task, call seed_role_backlog to refill all empty lanes without duplicating active work. "
         "When you encounter a task, start immediately without asking the user to repeat the task. "
         "Break it into concrete work items, claim the next available item, do the work, post progress/results, review other agents' results, "
         "fix issues, and repeat until the queue is empty or a real blocker is reached. "
@@ -72,15 +79,18 @@ def _room(room_id: str) -> dict[str, Any]:
 
 
 AUTONOMOUS_ROOM_RULES = """
-AI HIVE AUTONOMOUS WORK RULES
-- Use only your stable pseudonymous alias in messages and work-item claims. Never name your provider, model, account, or user.
-- Begin the assigned task immediately; do not ask the owner to repeat instructions already present in this room.
-- Convert the goal into small, concrete work items. Claim one, complete it, post progress/results, and update its status.
-- Review other agents' contributions, point out flaws constructively, and improve the result where possible.
-- After each item, inspect the queue and room again; continue while useful work remains and your session is active.
-- If blocked by missing credentials, permissions, quota, or unavailable tools, post a specific blocker and mark the item blocked; never fabricate success.
-- Do not expose secrets, personal data, or private provider/account identifiers.
-- The server stores work but cannot wake an inactive model. True unattended work requires a configured background agent/provider integration.
+AI HIVE ROLE-BASED AUTONOMOUS WORK RULES
+- Owner-defined leadership lanes: ChatGPT session = research lead; Claude session = coding lead; Gemini session = marketing lead. Routine room messages use pseudonymous aliases; heartbeats include the assigned role.
+- Research owns evidence gathering, repository/product discovery, prioritization, validation, and independent review.
+- Coding owns architecture, implementation, tests, pull requests, reliability, and technical review.
+- Marketing owns audience/competitor research, positioning, messaging, content, and measurable growth experiments.
+- Begin work immediately without asking the owner to repeat instructions already present in this room.
+- Convert goals into small tasks routed to research, coding, marketing, or any. Claim only your role's tasks plus generic tasks; never take another role's work.
+- Send heartbeat_agent at task start, meaningful milestones, blockers, and completion. Post evidence and update task status accurately.
+- Review other agents' contributions, fix flaws constructively, and continue while your session is active.
+- If blocked by credentials, permissions, quota, or unavailable tools, post the exact blocker and mark the task blocked; never fabricate success.
+- Do not expose secrets, personal data, or private account identifiers.
+- The server stores work but cannot wake an inactive model. True unattended work requires a configured background-agent/provider integration.
 """.strip()
 
 
@@ -158,12 +168,12 @@ def list_my_rooms(limit: int = 10) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def create_work_item(room_id: str, title: str, description: str) -> dict[str, Any]:
-    """Queue a durable work item in a shared room/project for a connected assistant to claim."""
+def create_work_item(room_id: str, title: str, description: str, role: str = "any") -> dict[str, Any]:
+    """Queue a work item for research, coding, marketing, or any role."""
     _room(room_id)
     if not title.strip() or not description.strip():
         raise ValueError("title and description are required")
-    return storage_create_work_item(room_id, title, description, time.time())
+    return storage_create_work_item(room_id, title, description, time.time(), role=role)
 
 
 @mcp.tool()
@@ -174,11 +184,11 @@ def list_work_items(room_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def claim_next_work_item(room_id: str, assistant: str) -> dict[str, Any]:
-    """Claim the oldest queued work item using a pseudonymous assistant alias."""
+def claim_next_work_item(room_id: str, assistant: str, role: str = "any") -> dict[str, Any]:
+    """Claim the oldest queued item matching your role, plus generic tasks."""
     _room(room_id)
-    item = storage_claim_work_item(room_id, _anonymous_alias(assistant), time.time())
-    return item or {"room_id": room_id, "available": False, "message": "No queued work items."}
+    item = storage_claim_work_item(room_id, _anonymous_alias(assistant), time.time(), role=role)
+    return item or {"room_id": room_id, "available": False, "message": "No queued work items for this role."}
 
 
 @mcp.tool()
@@ -186,6 +196,79 @@ def update_work_item(room_id: str, item_id: str, status: str, assistant: str, re
     """Update a claimed work item with progress or a result; only its assigned alias can update it."""
     _room(room_id)
     return storage_update_work_item(room_id, item_id, status, _anonymous_alias(assistant), result, time.time())
+
+
+@mcp.tool()
+def heartbeat_agent(room_id: str, assistant: str, role: str, status: str = "working",
+                    current_task: str = "", message: str = "") -> dict[str, Any]:
+    """Report role, availability, current task, and last-seen time to the team dashboard."""
+    _room(room_id)
+    return storage_heartbeat_agent(
+        room_id, _anonymous_alias(assistant), role, status, current_task, message, time.time()
+    )
+
+
+@mcp.tool()
+def list_agents(room_id: str, stale_after_seconds: int = 900) -> list[dict[str, Any]]:
+    """List agent roles and heartbeats; old heartbeats are labeled stale, not falsely online."""
+    _room(room_id)
+    return storage_list_agents(room_id, time.time(), stale_after_seconds)
+
+
+@mcp.tool()
+def seed_role_backlog(room_id: str, context: str = "") -> dict[str, Any]:
+    """Atomically ensure each leadership lane has one queued/in-progress task; safe under concurrent calls."""
+    room = _room(room_id)
+    defaults = {
+        "research": (
+            "Research cycle",
+            "Investigate the mission and accessible repositories. Gather concrete evidence, rank the top three unresolved opportunities, "
+            "and create role-routed follow-up tasks for validated findings. Separate facts from assumptions and link source files/issues."
+        ),
+        "coding": (
+            "Engineering cycle",
+            "Inspect the highest-priority open engineering issue relevant to the mission. Implement one narrow, useful improvement, add or update regression tests, "
+            "run available checks, and report exact files, commit/PR, test results, and any risks. Do not claim checks you did not run."
+        ),
+        "marketing": (
+            "Marketing cycle",
+            "Identify the most relevant audience and competing alternatives for the mission. Produce evidence-backed positioning, three low-cost growth experiments, "
+            "and measurable success criteria. Create follow-up marketing tasks and avoid spam, fabricated claims, or unapproved outreach."
+        ),
+    }
+    now = time.time()
+    specs = []
+    for role, (title, expected_output) in defaults.items():
+        full_description = (
+            "MISSION CONTEXT:\n" + room.get("goal", "")[:5000]
+            + ("\n\nOWNER/AGENT CONTEXT:\n" + context.strip()[:2000] if context.strip() else "")
+            + "\n\nEXPECTED OUTPUT:\n" + expected_output
+            + "\n\nCONTINUATION: When completed, post evidence, update this task, inspect the queue, and seed/claim the next useful task for your own lane."
+        )
+        specs.append({"role": role, "title": title, "description": full_description})
+    created, skipped = storage_ensure_role_backlog(room_id, specs, now)
+    if created:
+        summary = "ROLE BACKLOG SEEDED: " + ", ".join(item["role"] + ": " + item["title"] for item in created)
+        post_message(room_id, "Coordinator", summary, "contribution")
+    return {"room_id": room_id, "created": created, "skipped_active_roles": skipped}
+
+
+@mcp.tool()
+def get_team_status(room_id: str) -> dict[str, Any]:
+    """Summarize agent presence and task counts for the dashboard or coordination."""
+    _room(room_id)
+    agents = storage_list_agents(room_id, time.time())
+    items = storage_list_work_items(room_id)
+    counts = {state: sum(1 for item in items if item["status"] == state)
+              for state in ("queued", "in_progress", "blocked", "completed", "failed")}
+    return {
+        "room_id": room_id,
+        "agents": agents,
+        "task_counts": counts,
+        "active_agents": sum(1 for agent in agents if agent["effective_status"] == "working"),
+        "stale_agents": sum(1 for agent in agents if agent["effective_status"] == "stale"),
+        "updated_at": time.time(),
+    }
 
 
 @mcp.tool()
@@ -201,6 +284,8 @@ def get_connection_info() -> dict[str, Any]:
             "Ask each connected assistant to read_room, work on the goal, then post_message.",
             "Ask assistants to read the other contributions and post critiques or a final summary.",
             "Use create_work_item/list_work_items/claim_next_work_item/update_work_item to coordinate queued subtasks.",
+        "Use heartbeat_agent/list_agents/get_team_status for role-aware presence and stale-heartbeat visibility.",
+        "Use seed_role_backlog to create a starter task for each empty leadership lane without duplicating active tasks.",
         ],
         "storage": database_mode(),
         "background_work": "Room instructions direct active assistants to self-assign, complete, review, and continue queued work without repeated user prompts. The server cannot wake an inactive model; true unattended inference requires a separately configured background agent/provider integration.",
@@ -211,6 +296,7 @@ def get_connection_info() -> dict[str, Any]:
             "Room messages use stable HMAC-derived Agent aliases; this hides supplied labels from other room participants but is pseudonymization, not anonymity from model providers or the hosting platform.",
             "PostgreSQL via DATABASE_URL is required for durable data across Render deploys/restarts. SQLite is a development fallback and may be ephemeral on hosted platforms.",
             "Queued tasks remain stored while the database is available, but this server cannot make a model generate code after its provider session stops without a supported background agent or provider API integration.",
+            "Agent presence is based on explicit heartbeats, not provider telemetry; stale means no heartbeat within the configured threshold.",
         ],
     }
 
@@ -303,7 +389,14 @@ def dashboard():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "AI Hive MCP", "version": "0.7.0", "authentication": "oauth-pkce"}
+    mode = database_mode()
+    return {
+        "ok": True, "service": "AI Hive MCP", "version": "0.8.0",
+        "authentication": "oauth-pkce", "storage": mode,
+        "durable_storage_configured": mode == "postgresql",
+        "storage_warning": "" if mode == "postgresql" else
+            "SQLite fallback may lose rooms and queued tasks across hosted restarts or deploys. Configure DATABASE_URL for PostgreSQL.",
+    }
 
 
 @app.get("/.well-known/oauth-protected-resource")
@@ -546,6 +639,23 @@ def dashboard_logout(request: Request):
     return response
 
 
+@app.get("/dashboard/api/status")
+def dashboard_status(request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    mode = database_mode()
+    rooms = storage_list_rooms(30)
+    return {
+        "storage": mode,
+        "durable_storage_configured": mode == "postgresql",
+        "storage_warning": "" if mode == "postgresql" else
+            "SQLite fallback may lose rooms and tasks across hosted restarts/deploys. Configure DATABASE_URL for PostgreSQL.",
+        "room_count": len(rooms),
+        "task_count": sum(len(storage_list_work_items(room["room_id"])) for room in rooms),
+        "server_time": time.time(),
+    }
+
+
 @app.get("/dashboard/api/rooms")
 def dashboard_rooms(request: Request):
     if not _dashboard_authenticated(request):
@@ -572,9 +682,10 @@ async def dashboard_create_room(request: Request):
     room_id = uuid.uuid4().hex
     now = time.time()
     coordination_rules = (
-        "\\n\\nAI HIVE AUTONOMOUS COLLABORATION RULES: Use stable pseudonymous aliases. "
-        "Do not identify your provider/model or share personal identifiers. Start the task immediately, create/claim work items, post progress, review other agents, and continue while your session is active. "
-        "Post progress and results as messages (draft typing is not visible to the dashboard). "
+        "\n\nAI HIVE ROLE-BASED AUTONOMOUS COLLABORATION RULES: ChatGPT session = research lead; Claude session = coding lead; Gemini session = marketing lead. "
+        "Research owns evidence, discovery, prioritization and review; coding owns implementation, tests, pull requests and reliability; marketing owns audience research, positioning, content and growth experiments. "
+        "Use pseudonymous aliases in routine messages, but report your role through heartbeat_agent. Route tasks to research, coding, marketing, or any; claim only your role plus generic tasks. "
+        "Heartbeat at task start, meaningful milestones, blockers and completion. Post concrete progress/results and update task statuses accurately. "
         "If you encounter a quota, rate, usage, or context limit, post a clear LIMIT WARNING immediately. "
         "Check the room for owner directions; follow PAUSE and CONTINUE SOLO directives when next reading the room. "
         "Queued tasks require a connected assistant to claim them; this server does not run model inference by itself."
@@ -596,6 +707,24 @@ def dashboard_read_room(room_id: str, request: Request):
     return {"room": room, "work_items": storage_list_work_items(room_id)}
 
 
+@app.get("/dashboard/api/rooms/{room_id}/agents")
+def dashboard_list_agents(room_id: str, request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    if not storage_get_room(room_id):
+        return JSONResponse({"error": "Room not found."}, status_code=404)
+    return {"agents": storage_list_agents(room_id, time.time())}
+
+
+@app.post("/dashboard/api/rooms/{room_id}/seed-backlog")
+def dashboard_seed_backlog(room_id: str, request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    if not storage_get_room(room_id):
+        return JSONResponse({"error": "Room not found."}, status_code=404)
+    return seed_role_backlog(room_id)
+
+
 @app.post("/dashboard/api/rooms/{room_id}/tasks")
 async def dashboard_create_task(room_id: str, request: Request):
     if not _dashboard_authenticated(request):
@@ -611,9 +740,12 @@ async def dashboard_create_task(room_id: str, request: Request):
         return JSONResponse({"error": "Send a JSON title and description."}, status_code=400)
     if not title or not description:
         return JSONResponse({"error": "Task title and instructions are required."}, status_code=400)
-    item = storage_create_work_item(room_id, title, description, time.time())
-    post_message(room_id, "Coordinator", "OWNER TASK: " + title + "\n" + description
-                 + "\nAny connected assistant: claim this task if it fits your role. Use a pseudonymous alias and post progress/results in this room.", "contribution")
+    role = str(data.get("role", "any")).strip().lower()
+    if role not in {"research", "coding", "marketing", "any"}:
+        return JSONResponse({"error": "Role must be research, coding, marketing, or any."}, status_code=400)
+    item = storage_create_work_item(room_id, title, description, time.time(), role=role)
+    post_message(room_id, "Coordinator", "OWNER TASK (" + role.upper() + "): " + title + "\n" + description
+                 + "\nThe matching role leader should claim this task; any role may claim only generic tasks. Post heartbeat and evidence in this room.", "contribution")
     return {"task": item}
 
 

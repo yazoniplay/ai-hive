@@ -72,11 +72,35 @@ def init_db() -> None:
                 project_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'any',
                 status TEXT NOT NULL,
                 assigned_to TEXT NOT NULL,
                 result TEXT NOT NULL,
                 created_at DOUBLE PRECISION NOT NULL,
                 updated_at DOUBLE PRECISION NOT NULL
+            )
+        """)
+        # Safe in-place migration for existing SQLite/PostgreSQL databases.
+        if is_postgres:
+            columns = {row["column_name"] for row in _execute(
+                conn, True,
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'hive_work_items'"
+            ).fetchall()}
+        else:
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(hive_work_items)").fetchall()}
+        if "role" not in columns:
+            _execute(conn, is_postgres,
+                     "ALTER TABLE hive_work_items ADD COLUMN role TEXT NOT NULL DEFAULT 'any'")
+        _execute(conn, is_postgres, """
+            CREATE TABLE IF NOT EXISTS hive_agents (
+                room_id TEXT NOT NULL,
+                assistant TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL,
+                current_task TEXT NOT NULL,
+                message TEXT NOT NULL,
+                last_seen DOUBLE PRECISION NOT NULL,
+                PRIMARY KEY (room_id, assistant)
             )
         """)
 
@@ -125,13 +149,22 @@ def list_rooms(limit: int = 10) -> list[dict[str, Any]]:
     return [json.loads(row["payload"] if is_postgres else row["payload"]) for row in rows]
 
 
-def create_work_item(project_id: str, title: str, description: str, now: float) -> dict[str, Any]:
+VALID_ROLES = {"research", "coding", "marketing", "any"}
+VALID_AGENT_STATUSES = {"working", "waiting", "blocked", "idle"}
+
+
+def create_work_item(project_id: str, title: str, description: str, now: float,
+                     role: str = "any") -> dict[str, Any]:
     import uuid
+    role = role.strip().lower()
+    if role not in VALID_ROLES:
+        raise ValueError("role must be research, coding, marketing, or any")
     item = {
         "id": uuid.uuid4().hex,
         "project_id": project_id,
         "title": title.strip()[:160],
         "description": description.strip()[:12000],
+        "role": role,
         "status": "queued",
         "assigned_to": "",
         "result": "",
@@ -141,15 +174,87 @@ def create_work_item(project_id: str, title: str, description: str, now: float) 
     with connection() as (conn, is_postgres):
         _execute(conn, is_postgres, """
             INSERT INTO hive_work_items
-            (id, project_id, title, description, status, assigned_to, result, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (item["id"], item["project_id"], item["title"], item["description"],
+            (id, project_id, title, description, role, status, assigned_to, result, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (item["id"], item["project_id"], item["title"], item["description"], item["role"],
               item["status"], item["assigned_to"], item["result"], now, now))
     return item
 
 
+def ensure_role_backlog(project_id: str, task_specs: list[dict[str, str]],
+                        now: float) -> tuple[list[dict[str, Any]], list[str]]:
+    """Atomically ensure one active task per role, safe under concurrent seeding calls."""
+    import uuid
+
+    for spec in task_specs:
+        role = str(spec.get("role", "")).strip().lower()
+        if role not in VALID_ROLES - {"any"}:
+            raise ValueError("backlog roles must be research, coding, or marketing")
+        if not str(spec.get("title", "")).strip() or not str(spec.get("description", "")).strip():
+            raise ValueError("each backlog task requires a title and description")
+
+    created: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    with connection() as (conn, is_postgres):
+        if is_postgres:
+            # Serialize seeders for this room; lock is released at transaction end.
+            _execute(conn, True, "SELECT pg_advisory_xact_lock(hashtext(?))", (project_id,))
+        else:
+            conn.execute("BEGIN IMMEDIATE")
+
+        active_rows = _execute(conn, is_postgres, """
+            SELECT role FROM hive_work_items
+            WHERE project_id = ? AND status IN ('queued', 'in_progress')
+              AND role IN ('research', 'coding', 'marketing')
+        """, (project_id,)).fetchall()
+        active_roles = {
+            row["role"] if is_postgres else row[0]
+            for row in active_rows
+        }
+        count_rows = _execute(conn, is_postgres, """
+            SELECT role, COUNT(*) AS total FROM hive_work_items
+            WHERE project_id = ? AND role IN ('research', 'coding', 'marketing')
+            GROUP BY role
+        """, (project_id,)).fetchall()
+        counts = {
+            (row["role"] if is_postgres else row[0]):
+            int(row["total"] if is_postgres else row[1])
+            for row in count_rows
+        }
+
+        for spec in task_specs:
+            role = spec["role"].strip().lower()
+            if role in active_roles:
+                skipped.append(role)
+                continue
+            cycle = counts.get(role, 0) + 1
+            item = {
+                "id": uuid.uuid4().hex,
+                "project_id": project_id,
+                "title": f'{spec["title"].strip()} {cycle}'[:160],
+                "description": spec["description"].strip()[:12000],
+                "role": role,
+                "status": "queued",
+                "assigned_to": "",
+                "result": "",
+                "created_at": now,
+                "updated_at": now,
+            }
+            _execute(conn, is_postgres, """
+                INSERT INTO hive_work_items
+                (id, project_id, title, description, role, status, assigned_to, result, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (item["id"], item["project_id"], item["title"], item["description"], item["role"],
+                  item["status"], item["assigned_to"], item["result"], now, now))
+            created.append(item)
+            active_roles.add(role)
+            counts[role] = cycle
+
+    return created, skipped
+
+
 def _work_item(row, is_postgres: bool) -> dict[str, Any]:
-    keys = ("id", "project_id", "title", "description", "status", "assigned_to",
+    keys = ("id", "project_id", "title", "description", "role", "status", "assigned_to",
             "result", "created_at", "updated_at")
     return {key: (row[key] if is_postgres else row[index]) for index, key in enumerate(keys)}
 
@@ -157,31 +262,39 @@ def _work_item(row, is_postgres: bool) -> dict[str, Any]:
 def list_work_items(project_id: str) -> list[dict[str, Any]]:
     with connection() as (conn, is_postgres):
         rows = _execute(conn, is_postgres, """
-            SELECT id, project_id, title, description, status, assigned_to, result, created_at, updated_at
+            SELECT id, project_id, title, description, role, status, assigned_to, result, created_at, updated_at
             FROM hive_work_items WHERE project_id = ? ORDER BY created_at ASC
         """, (project_id,)).fetchall()
     return [_work_item(row, is_postgres) for row in rows]
 
 
-def claim_work_item(project_id: str, assistant: str, now: float) -> dict[str, Any] | None:
+def claim_work_item(project_id: str, assistant: str, now: float,
+                    role: str = "any") -> dict[str, Any] | None:
     assistant = assistant.strip()[:80]
+    role = role.strip().lower()
     if not assistant:
         raise ValueError("assistant alias is required")
+    if role not in VALID_ROLES:
+        raise ValueError("role must be research, coding, marketing, or any")
+    # Generic agents may claim only generic tasks; leaders can claim their own role
+    # plus generic tasks, never another leader's explicitly routed work.
+    role_filter = "role = 'any'" if role == "any" else "role IN ('any', ?)"
+    params = (project_id,) if role == "any" else (project_id, role)
     with connection() as (conn, is_postgres):
         if not is_postgres:
             conn.execute("BEGIN IMMEDIATE")
         if is_postgres:
-            row = _execute(conn, True, """
-                SELECT id, project_id, title, description, status, assigned_to, result, created_at, updated_at
-                FROM hive_work_items WHERE project_id = ? AND status = 'queued'
+            row = _execute(conn, True, f"""
+                SELECT id, project_id, title, description, role, status, assigned_to, result, created_at, updated_at
+                FROM hive_work_items WHERE project_id = ? AND status = 'queued' AND {role_filter}
                 ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED
-            """, (project_id,)).fetchone()
+            """, params).fetchone()
         else:
-            row = _execute(conn, False, """
-                SELECT id, project_id, title, description, status, assigned_to, result, created_at, updated_at
-                FROM hive_work_items WHERE project_id = ? AND status = 'queued'
+            row = _execute(conn, False, f"""
+                SELECT id, project_id, title, description, role, status, assigned_to, result, created_at, updated_at
+                FROM hive_work_items WHERE project_id = ? AND status = 'queued' AND {role_filter}
                 ORDER BY created_at ASC LIMIT 1
-            """, (project_id,)).fetchone()
+            """, params).fetchone()
         if not row:
             return None
         item = _work_item(row, is_postgres)
@@ -200,7 +313,7 @@ def update_work_item(project_id: str, item_id: str, status: str, assistant: str,
         raise ValueError("status must be queued, in_progress, blocked, completed, or failed")
     with connection() as (conn, is_postgres):
         row = _execute(conn, is_postgres, """
-            SELECT id, project_id, title, description, status, assigned_to, result, created_at, updated_at
+            SELECT id, project_id, title, description, role, status, assigned_to, result, created_at, updated_at
             FROM hive_work_items WHERE id = ? AND project_id = ?
         """, (item_id, project_id)).fetchone()
         if not row:
@@ -217,3 +330,49 @@ def update_work_item(project_id: str, item_id: str, status: str, assistant: str,
 
 
 init_db()
+
+
+def heartbeat_agent(room_id: str, assistant: str, role: str, status: str,
+                    current_task: str, message: str, now: float) -> dict[str, Any]:
+    assistant = assistant.strip()[:80]
+    role = role.strip().lower()
+    status = status.strip().lower()
+    if not assistant:
+        raise ValueError("assistant alias is required")
+    if role not in VALID_ROLES - {"any"}:
+        raise ValueError("role must be research, coding, or marketing")
+    if status not in VALID_AGENT_STATUSES:
+        raise ValueError("status must be working, waiting, blocked, or idle")
+    row = {
+        "room_id": room_id, "assistant": assistant, "role": role, "status": status,
+        "current_task": current_task.strip()[:240], "message": message.strip()[:1000],
+        "last_seen": now,
+    }
+    with connection() as (conn, is_postgres):
+        _execute(conn, is_postgres, """
+            INSERT INTO hive_agents(room_id, assistant, role, status, current_task, message, last_seen)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(room_id, assistant) DO UPDATE SET
+                role=excluded.role, status=excluded.status, current_task=excluded.current_task,
+                message=excluded.message, last_seen=excluded.last_seen
+        """, (row["room_id"], row["assistant"], row["role"], row["status"],
+              row["current_task"], row["message"], row["last_seen"]))
+    return row
+
+
+def list_agents(room_id: str, now: float, stale_after_seconds: int = 900) -> list[dict[str, Any]]:
+    stale_after_seconds = max(60, min(int(stale_after_seconds), 86400))
+    with connection() as (conn, is_postgres):
+        rows = _execute(conn, is_postgres, """
+            SELECT room_id, assistant, role, status, current_task, message, last_seen
+            FROM hive_agents WHERE room_id = ? ORDER BY last_seen DESC
+        """, (room_id,)).fetchall()
+    agents = []
+    for row in rows:
+        agent = {key: (row[key] if is_postgres else row[index]) for index, key in enumerate(
+            ("room_id", "assistant", "role", "status", "current_task", "message", "last_seen"))}
+        age = max(0, int(now - float(agent["last_seen"])))
+        agent["seconds_since_seen"] = age
+        agent["effective_status"] = "stale" if age > stale_after_seconds else agent["status"]
+        agents.append(agent)
+    return agents
