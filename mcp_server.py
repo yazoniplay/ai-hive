@@ -16,6 +16,8 @@ from storage import (
     database_mode,
     get_room as storage_get_room,
     get_oauth_client as storage_get_oauth_client,
+    heartbeat_agent as storage_heartbeat_agent,
+    list_agents as storage_list_agents,
     list_rooms as storage_list_rooms,
     list_work_items as storage_list_work_items,
     save_room,
@@ -54,6 +56,9 @@ mcp = FastMCP(
         "AI Hive is a shared workspace for assistants connected through MCP. "
         "It does not call model-provider APIs; the connected assistants generate the work. "
         "Use pseudonymous aliases only; never disclose provider/model names, account identifiers, or personal details in room messages. "
+        "The team has three role lanes: research (discovery, evidence, prioritization), coding (implementation, tests, reviews), and marketing (positioning, audience research, content, growth experiments). "
+        "Create role-targeted tasks and claim only work matching your declared role plus generic tasks. "
+        "Send heartbeat_agent updates at task start, milestones, blockers, and completion; use list_agents/get_team_status to coordinate. "
         "When you encounter a task, start immediately without asking the user to repeat the task. "
         "Break it into concrete work items, claim the next available item, do the work, post progress/results, review other agents' results, "
         "fix issues, and repeat until the queue is empty or a real blocker is reached. "
@@ -158,12 +163,12 @@ def list_my_rooms(limit: int = 10) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def create_work_item(room_id: str, title: str, description: str) -> dict[str, Any]:
-    """Queue a durable work item in a shared room/project for a connected assistant to claim."""
+def create_work_item(room_id: str, title: str, description: str, role: str = "any") -> dict[str, Any]:
+    """Queue a work item for research, coding, marketing, or any role."""
     _room(room_id)
     if not title.strip() or not description.strip():
         raise ValueError("title and description are required")
-    return storage_create_work_item(room_id, title, description, time.time())
+    return storage_create_work_item(room_id, title, description, time.time(), role=role)
 
 
 @mcp.tool()
@@ -174,11 +179,11 @@ def list_work_items(room_id: str) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
-def claim_next_work_item(room_id: str, assistant: str) -> dict[str, Any]:
-    """Claim the oldest queued work item using a pseudonymous assistant alias."""
+def claim_next_work_item(room_id: str, assistant: str, role: str = "any") -> dict[str, Any]:
+    """Claim the oldest queued item matching your role, plus generic tasks."""
     _room(room_id)
-    item = storage_claim_work_item(room_id, _anonymous_alias(assistant), time.time())
-    return item or {"room_id": room_id, "available": False, "message": "No queued work items."}
+    item = storage_claim_work_item(room_id, _anonymous_alias(assistant), time.time(), role=role)
+    return item or {"room_id": room_id, "available": False, "message": "No queued work items for this role."}
 
 
 @mcp.tool()
@@ -186,6 +191,41 @@ def update_work_item(room_id: str, item_id: str, status: str, assistant: str, re
     """Update a claimed work item with progress or a result; only its assigned alias can update it."""
     _room(room_id)
     return storage_update_work_item(room_id, item_id, status, _anonymous_alias(assistant), result, time.time())
+
+
+@mcp.tool()
+def heartbeat_agent(room_id: str, assistant: str, role: str, status: str = "working",
+                    current_task: str = "", message: str = "") -> dict[str, Any]:
+    """Report role, availability, current task, and last-seen time to the team dashboard."""
+    _room(room_id)
+    return storage_heartbeat_agent(
+        room_id, _anonymous_alias(assistant), role, status, current_task, message, time.time()
+    )
+
+
+@mcp.tool()
+def list_agents(room_id: str, stale_after_seconds: int = 900) -> list[dict[str, Any]]:
+    """List agent roles and heartbeats; old heartbeats are labeled stale, not falsely online."""
+    _room(room_id)
+    return storage_list_agents(room_id, time.time(), stale_after_seconds)
+
+
+@mcp.tool()
+def get_team_status(room_id: str) -> dict[str, Any]:
+    """Summarize agent presence and task counts for the dashboard or coordination."""
+    _room(room_id)
+    agents = storage_list_agents(room_id, time.time())
+    items = storage_list_work_items(room_id)
+    counts = {state: sum(1 for item in items if item["status"] == state)
+              for state in ("queued", "in_progress", "blocked", "completed", "failed")}
+    return {
+        "room_id": room_id,
+        "agents": agents,
+        "task_counts": counts,
+        "active_agents": sum(1 for agent in agents if agent["effective_status"] == "working"),
+        "stale_agents": sum(1 for agent in agents if agent["effective_status"] == "stale"),
+        "updated_at": time.time(),
+    }
 
 
 @mcp.tool()
@@ -201,6 +241,7 @@ def get_connection_info() -> dict[str, Any]:
             "Ask each connected assistant to read_room, work on the goal, then post_message.",
             "Ask assistants to read the other contributions and post critiques or a final summary.",
             "Use create_work_item/list_work_items/claim_next_work_item/update_work_item to coordinate queued subtasks.",
+        "Use heartbeat_agent/list_agents/get_team_status for role-aware presence and stale-heartbeat visibility.",
         ],
         "storage": database_mode(),
         "background_work": "Room instructions direct active assistants to self-assign, complete, review, and continue queued work without repeated user prompts. The server cannot wake an inactive model; true unattended inference requires a separately configured background agent/provider integration.",
@@ -211,6 +252,7 @@ def get_connection_info() -> dict[str, Any]:
             "Room messages use stable HMAC-derived Agent aliases; this hides supplied labels from other room participants but is pseudonymization, not anonymity from model providers or the hosting platform.",
             "PostgreSQL via DATABASE_URL is required for durable data across Render deploys/restarts. SQLite is a development fallback and may be ephemeral on hosted platforms.",
             "Queued tasks remain stored while the database is available, but this server cannot make a model generate code after its provider session stops without a supported background agent or provider API integration.",
+            "Agent presence is based on explicit heartbeats, not provider telemetry; stale means no heartbeat within the configured threshold.",
         ],
     }
 
@@ -596,6 +638,15 @@ def dashboard_read_room(room_id: str, request: Request):
     return {"room": room, "work_items": storage_list_work_items(room_id)}
 
 
+@app.get("/dashboard/api/rooms/{room_id}/agents")
+def dashboard_list_agents(room_id: str, request: Request):
+    if not _dashboard_authenticated(request):
+        return _dashboard_unauthorized()
+    if not storage_get_room(room_id):
+        return JSONResponse({"error": "Room not found."}, status_code=404)
+    return {"agents": storage_list_agents(room_id, time.time())}
+
+
 @app.post("/dashboard/api/rooms/{room_id}/tasks")
 async def dashboard_create_task(room_id: str, request: Request):
     if not _dashboard_authenticated(request):
@@ -611,9 +662,12 @@ async def dashboard_create_task(room_id: str, request: Request):
         return JSONResponse({"error": "Send a JSON title and description."}, status_code=400)
     if not title or not description:
         return JSONResponse({"error": "Task title and instructions are required."}, status_code=400)
-    item = storage_create_work_item(room_id, title, description, time.time())
-    post_message(room_id, "Coordinator", "OWNER TASK: " + title + "\n" + description
-                 + "\nAny connected assistant: claim this task if it fits your role. Use a pseudonymous alias and post progress/results in this room.", "contribution")
+    role = str(data.get("role", "any")).strip().lower()
+    if role not in {"research", "coding", "marketing", "any"}:
+        return JSONResponse({"error": "Role must be research, coding, marketing, or any."}, status_code=400)
+    item = storage_create_work_item(room_id, title, description, time.time(), role=role)
+    post_message(room_id, "Coordinator", "OWNER TASK (" + role.upper() + "): " + title + "\n" + description
+                 + "\nThe matching role leader should claim this task; any role may claim only generic tasks. Post heartbeat and evidence in this room.", "contribution")
     return {"task": item}
 
 
